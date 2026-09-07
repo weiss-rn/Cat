@@ -110,7 +110,7 @@ For most devices, it is recommended to install the **arm64-v8a** version of the 
 <!-- [<img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png"
      alt="Get it on F-Droid"
      height="70">](https://f-droid.org/packages/com.junkfood.seal/) -->
-
+<!--
 ## 💬 Contact
 
 Join our [Telegram Channel](https://t.me/seal_app) or [Matrix Space](https://matrix.to/#/#seal-space:matrix.org) for discussion, announcements, and releases!
@@ -119,7 +119,7 @@ Join our [Telegram Channel](https://t.me/seal_app) or [Matrix Space](https://mat
 
 <p><!-- sponsors --><a href="https://github.com/Opposum102"><img src="https:&#x2F;&#x2F;github.com&#x2F;Opposum102.png" width="60px" alt="User avatar: " /></a><a href="https://github.com/gasparderhun-prorbg"><img src="https:&#x2F;&#x2F;github.com&#x2F;gasparderhun-prorbg.png" width="60px" alt="User avatar: " /></a><!-- sponsors --></p>
 
-
+<!--
 Seal will be always free and open source for everyone. If you like it, please consider [sponsoring me](https://github.com/sponsors/JunkFood02)!
 
 ## 🤝 Contributing
@@ -166,4 +166,5 @@ Some of the UI designs and codes are borrowed from [Read You](https://github.com
 <table><td>
 <a href="#start-of-content">👆 Scroll to top</a>
 </td></table>
-</div> -->
+</div> 
+-->
