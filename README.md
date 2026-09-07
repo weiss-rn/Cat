@@ -1,4 +1,4 @@
-<div align="center">
+<!-- <div align="center">
 
 <img width="" src="fastlane/metadata/android/en-US/images/icon.png"  width=160 height=160  align="center">
 
@@ -166,4 +166,4 @@ Some of the UI designs and codes are borrowed from [Read You](https://github.com
 <table><td>
 <a href="#start-of-content">👆 Scroll to top</a>
 </td></table>
-</div>
+</div> -->
