@@ -24,6 +24,7 @@ object TaskFactory {
         newTitle: String,
         selectedSubtitles: List<String>,
         selectedAutoCaptions: List<String>,
+        overridePreferences: DownloadPreferences? = null,
     ): TaskWithState {
         val fileSize =
             formatList.fold(.0) { acc, format ->
@@ -40,13 +41,18 @@ object TaskFactory {
         val audioOnly = audioOnlyFormats.isNotEmpty() && videoFormats.isEmpty()
         val mergeAudioStream = audioOnlyFormats.size > 1
         val formatId = formatList.joinToString(separator = "+") { it.formatId.toString() }
+        
+        // Check if we're merging video and audio (common for high-quality downloads)
+        val isMergingVideoAudio = videoFormats.isNotEmpty() && audioOnlyFormats.isNotEmpty()
 
         val subtitleLanguage =
             (selectedSubtitles + selectedAutoCaptions).joinToString(separator = ",")
 
         val preferences =
-            DownloadPreferences.createFromPreferences()
+            (overridePreferences ?: DownloadPreferences.createFromPreferences())
                 .run {
+                    val shouldUseMp4 = if (isMergingVideoAudio) false else this.mergeToMkv
+                    
                     copy(
                         formatIdString = formatId,
                         videoClips = videoClips,
@@ -54,6 +60,7 @@ object TaskFactory {
                         newTitle = newTitle,
                         mergeAudioStream = mergeAudioStream,
                         extractAudio = extractAudio || audioOnly,
+                        mergeToMkv = shouldUseMp4,
                     )
                 }
                 .run {

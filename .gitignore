@@ -17,3 +17,6 @@
 local.properties
 /keystore.properties
 .kotlin
+/docs
+/.logs_error
+/.new_icons

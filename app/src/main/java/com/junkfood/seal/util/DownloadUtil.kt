@@ -1,13 +1,14 @@
 package com.junkfood.seal.util
 
-import android.database.sqlite.SQLiteDatabase
-import android.database.sqlite.SQLiteDatabase.OPEN_READONLY
 import android.media.MediaCodecList
+import android.net.Uri
 import android.os.Build
 import android.util.Log
 import android.webkit.CookieManager
 import androidx.annotation.CheckResult
 import com.junkfood.seal.App
+import java.io.File
+import com.junkfood.seal.BuildConfig
 import com.junkfood.seal.App.Companion.audioDownloadDir
 import com.junkfood.seal.App.Companion.context
 import com.junkfood.seal.App.Companion.videoDownloadDir
@@ -28,6 +29,7 @@ import com.junkfood.seal.util.FileUtil.getCookiesFile
 import com.junkfood.seal.util.FileUtil.getExternalTempDir
 import com.junkfood.seal.util.FileUtil.getFileName
 import com.junkfood.seal.util.FileUtil.getSdcardTempDir
+import com.junkfood.seal.util.makeToast
 import com.junkfood.seal.util.FileUtil.moveFilesToSdcard
 import com.junkfood.seal.util.PreferenceUtil.COOKIE_HEADER
 import com.junkfood.seal.util.PreferenceUtil.getBoolean
@@ -39,23 +41,200 @@ import com.yausername.youtubedl_android.YoutubeDLException
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import com.yausername.youtubedl_android.YoutubeDLResponse
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.util.Locale
 
 object DownloadUtil {
 
-    object CookieScheme {
-        const val NAME = "name"
-        const val VALUE = "value"
-        const val SECURE = "is_secure"
-        const val EXPIRY = "expires_utc"
-        const val HOST = "host_key"
-        const val PATH = "path"
+    private val jsonFormat = Json { ignoreUnknownKeys = true }
+
+    // -------------------------------------------------------------------------
+    // Manual cookie content parsing
+    //
+    // When a CookieProfile has non-empty `content`, the user pasted cookies
+    // manually (Netscape / JSON / name=value format). These are parsed here and
+    // used directly instead of reading from CookieManager.
+    // -------------------------------------------------------------------------
+
+    /** JSON shape produced by "Cookie-Editor" and "EditThisCookie" browser extensions. */
+    @Serializable
+    private data class CookieJson(
+        val name: String = "",
+        val value: String = "",
+        val domain: String = "",
+        val path: String = "/",
+        val secure: Boolean = false,
+        @SerialName("httpOnly") val httpOnly: Boolean = false,
+        // Both extension names in the wild:
+        val expirationDate: Double = 0.0,
+        val expires: Double = 0.0,
+        val session: Boolean = true,
+    )
+
+    /**
+     * Parses manually-pasted cookie text into a [List<Cookie>].
+     * Three input formats are supported:
+     *
+     *  1. **Netscape / cookies.txt** — tab-separated 7-field lines.
+     *  2. **JSON** — array of cookie objects exported by "Cookie-Editor" /
+     *     "EditThisCookie" browser extensions.
+     *  3. **Header / name=value** — the semicolon-delimited string you see
+     *     when you copy a `Cookie:` request header from a browser.
+     *
+     * @param profileUrl The URL of the [CookieProfile] — used to derive the
+     *   domain for format 3, where no domain is available in the text.
+     * @param content    The raw text the user pasted.
+     */
+    fun parseCookieContent(profileUrl: String, content: String): List<Cookie> {
+        val trimmed = content.trim()
+        if (trimmed.isEmpty()) return emptyList()
+
+        return runCatching {
+            when {
+                // JSON: starts with [ (array) or { (single object)
+                trimmed.startsWith('[') || trimmed.startsWith('{') ->
+                    parseJsonCookies(profileUrl, trimmed)
+
+                // Netscape: has at least one line that contains a tab character
+                // (comment lines start with # and are fine to skip)
+                trimmed.lines().any { it.isNotBlank() && !it.startsWith('#') && '\t' in it } ->
+                    parseNetscapeCookies(trimmed)
+
+                // Fallback: treat as Cookie header value  "name=val; name=val"
+                else -> parseHeaderCookies(profileUrl, trimmed)
+            }
+        }.getOrElse { e ->
+            Log.w(TAG, "parseCookieContent failed, attempting header fallback: ${e.message}")
+            runCatching { parseHeaderCookies(profileUrl, trimmed) }.getOrDefault(emptyList())
+        }
     }
 
-    private val jsonFormat = Json { ignoreUnknownKeys = true }
+    private fun parseJsonCookies(profileUrl: String, json: String): List<Cookie> {
+        // Wrap bare object in an array so the decoder always receives a list.
+        val normalised = if (json.trimStart().startsWith('{')) "[$json]" else json
+        val items = jsonFormat.decodeFromString<List<CookieJson>>(normalised)
+        val now = System.currentTimeMillis() / 1000L
+        val fallbackDomain = profileUrl.let {
+            val url = if (it.startsWith("http://") || it.startsWith("https://")) it else "https://$it"
+            val host = Uri.parse(url).host?.removePrefix("www.")
+            if (host.isNullOrBlank()) "" else ".$host"
+        }
+        return items.mapNotNull { c ->
+            if (c.name.isEmpty()) return@mapNotNull null
+            // Pick whichever expiry field is populated; 0 means session cookie
+            val expiry = when {
+                c.expirationDate > 0 -> c.expirationDate.toLong()
+                c.expires > 0        -> c.expires.toLong()
+                else                 -> 0L
+            }
+            if (expiry > 0L && expiry < now) return@mapNotNull null // expired
+            val domain = c.domain.let { d ->
+                when {
+                    d.isBlank()         -> fallbackDomain
+                    d.startsWith('.')   -> d
+                    else                -> ".$d"
+                }
+            }
+            Cookie(
+                domain            = domain,
+                name              = c.name,
+                value             = c.value,
+                includeSubdomains = true,
+                path              = c.path.ifEmpty { "/" },
+                secure            = c.secure,
+                expiry            = expiry,
+                isHttpOnly        = c.httpOnly,
+            )
+        }
+    }
+
+    private fun parseNetscapeCookies(text: String): List<Cookie> {
+        val now = System.currentTimeMillis() / 1000L
+        val cookies = mutableListOf<Cookie>()
+        text.lines().forEach { line ->
+            val trimmed = line.trim()
+            if (trimmed.isEmpty() || trimmed.startsWith('#')) return@forEach
+            val parts = trimmed.split('\t')
+            if (parts.size < 7) return@forEach
+            val rawDomain          = parts[0]
+            val includeSubdomains  = parts[1].uppercase() == "TRUE"
+            val path               = parts[2]
+            val secure             = parts[3].uppercase() == "TRUE"
+            val expiry             = parts[4].toLongOrNull() ?: 0L
+            val name               = parts[5]
+            // Value may itself contain tabs — re-join the remainder
+            val value              = parts.drop(6).joinToString("\t")
+            if (name.isEmpty()) return@forEach
+            if (expiry > 0L && expiry < now) return@forEach // skip expired
+
+            // IMPORTANT: yt-dlp's cookie loader (YoutubeDLCookieJar, a subclass of Python's
+            // http.cookiejar.MozillaCookieJar) enforces `assert domain_specified == initial_dot`
+            // for every single line in the file — i.e. the "include subdomains" flag (this
+            // field) and whether `domain` starts with a dot MUST agree. A host-only cookie
+            // (includeSubdomains = FALSE) legitimately has no leading dot in a real cookies.txt
+            // export. The previous code unconditionally force-added a leading dot to every
+            // domain regardless of this flag, which broke that invariant for any pasted file
+            // containing host-only cookies. Because yt-dlp parses the WHOLE file in one pass,
+            // that single inconsistent line raised a LoadError and rejected the entire cookies
+            // file with "does not look like a Netscape format cookies file" — silently breaking
+            // cookie-based auth for every profile, not just the pasted one.
+            // Fix: derive the dot presence FROM includeSubdomains so the two always agree,
+            // instead of assuming the source domain string's dot state is correct.
+            val domain = if (includeSubdomains) {
+                if (rawDomain.startsWith('.')) rawDomain else ".$rawDomain"
+            } else {
+                rawDomain.removePrefix(".")
+            }
+
+            cookies.add(
+                Cookie(
+                    domain            = domain,
+                    name              = name,
+                    value             = value,
+                    includeSubdomains = includeSubdomains,
+                    path              = path,
+                    secure            = secure,
+                    expiry            = expiry,
+                    isHttpOnly        = false,
+                )
+            )
+        }
+        return cookies
+    }
+
+    private fun parseHeaderCookies(profileUrl: String, header: String): List<Cookie> {
+        val rawUrl = if (profileUrl.startsWith("http")) profileUrl else "https://$profileUrl"
+        val host   = Uri.parse(rawUrl).host ?: ""
+        val domain = "." + if (host.startsWith("www.")) host.removePrefix("www.") else host
+        val cookies = mutableListOf<Cookie>()
+        // Strip a leading "Cookie: " HTTP header prefix if the user copied the whole line
+        val cookiePart = header.removePrefix("Cookie:").removePrefix("cookie:").trim()
+        cookiePart.split(';').forEach { pair ->
+            val eqIdx = pair.indexOf('=')
+            if (eqIdx < 0) return@forEach
+            val name  = pair.substring(0, eqIdx).trim()
+            val value = pair.substring(eqIdx + 1).trim()
+            if (name.isEmpty()) return@forEach
+            cookies.add(
+                Cookie(
+                    domain            = domain,
+                    name              = name,
+                    value             = value,
+                    includeSubdomains = true,
+                    path              = "/",
+                    secure            = false,
+                    expiry            = 0L,
+                    isHttpOnly        = false,
+                )
+            )
+        }
+        return cookies
+    }
 
     private const val TAG = "DownloadUtil"
 
@@ -89,25 +268,31 @@ object DownloadUtil {
         downloadPreferences: DownloadPreferences = DownloadPreferences.createFromPreferences(),
     ): Result<YoutubeDLInfo> =
         YoutubeDL.runCatching {
-            ToastUtil.makeToastSuspend(context.getString(R.string.fetching_playlist_info))
+            App.applicationScope.launch(Dispatchers.Main) {
+                context.makeToast(R.string.fetching_playlist_info)
+            }
             val request = YoutubeDLRequest(playlistURL)
             with(request) {
                 //            addOption("--compat-options", "no-youtube-unavailable-videos")
                 addOption("--flat-playlist")
                 addOption("--dump-single-json")
                 addOption("-o", BASENAME)
-                addOption("-R", "1")
-                addOption("--socket-timeout", "5")
+                // Info-probe resilience: 1 retry + 5s timeout was too aggressive and made
+                // slow/distant servers (common for many non-YouTube sites) fail to even
+                // fetch metadata. 3 retries + 15s timeout is far more tolerant while still
+                // failing reasonably fast on genuinely dead hosts.
+                addOption("-R", "3")
+                addOption("--socket-timeout", "15")
                 downloadPreferences.run {
                     if (extractAudio) {
                         addOption("-x")
                     }
                     applyFormatSorter(this, toFormatSorter())
-                    if (proxy) {
-                        enableProxy(proxyUrl)
-                    }
                     if (forceIpv4) {
                         addOption("-4")
+                    }
+                    if (noCheckCertificate) {
+                        addOption("--no-check-certificate")
                     }
                     if (cookies) {
                         enableCookies(userAgentString)
@@ -157,33 +342,75 @@ object DownloadUtil {
                     if (cookies) {
                         enableCookies(userAgentString)
                     }
-                    if (proxy) {
-                        enableProxy(proxyUrl)
-                    }
                     if (forceIpv4) {
                         addOption("-4")
+                    }
+                    if (noCheckCertificate) {
+                        addOption("--no-check-certificate")
                     }
                     /*            if (debug) {
                         addOption("-v")
                     }*/
                     if (autoSubtitle) {
                         addOption("--write-auto-subs")
-                        if (!autoTranslatedSubtitles) {
-                            addOption("--extractor-args", "youtube:skip=translated_subs")
-                        }
                     }
+                    
+                    // No player_skip or player_client to get all format types
+                    // Format ID consistency will be maintained through caching within the same session
+                    if (autoSubtitle && !autoTranslatedSubtitles) {
+                        addOption("--extractor-args", "youtube:skip=translated_subs")
+                    }
+                    
                     if (playlistIndex != null) {
                         addOption("--playlist-items", playlistIndex)
                         addOption("--dump-json")
                     } else {
                         addOption("--dump-single-json")
+                        addOption("--no-playlist")
                     }
-                    addOption("-R", "1")
-                    addOption("--no-playlist")
-                    addOption("--socket-timeout", "5")
+                    // See getPlaylistOrVideoInfo: 1 retry + 5s timeout caused spurious
+                    // "fetch info" failures on slow sites. Use more tolerant values.
+                    addOption("-R", "3")
+                    addOption("--socket-timeout", "15")
                 }
             return getVideoInfo(request, taskKey)
         }
+    }
+
+    /**
+     * Fetches a YouTube video's comments via yt-dlp's `--write-comments` + `--dump-single-json`
+     * combo (skip-download so nothing is actually downloaded). [maxComments] is passed through
+     * yt-dlp's YouTube extractor-args `max_comments` — without a cap, yt-dlp will happily try to
+     * page through every single comment on a viral video, which can take minutes and use a lot
+     * of data, so the Comment Downloader tool always sets a sane cap.
+     */
+    @CheckResult
+    fun fetchCommentsFromUrl(
+        url: String,
+        maxComments: Int = 500,
+        sortByTop: Boolean = true,
+    ): Result<VideoInfo> {
+        val request = YoutubeDLRequest(url).apply {
+            addOption("--skip-download")
+            addOption("--write-comments")
+            addOption("--dump-single-json")
+            addOption("--no-playlist")
+            addOption(
+                "--extractor-args",
+                "youtube:max_comments=$maxComments,all,all,all" +
+                    (if (sortByTop) ";comment_sort=top" else ""),
+            )
+            if (COOKIES.getBoolean()) {
+                val userAgentString =
+                    USER_AGENT_STRING.run { if (USER_AGENT.getBoolean()) getString() else "" }
+                enableCookies(userAgentString)
+            }
+            // Comment pagination alone can take a while on heavily-commented videos —
+            // more generous timeouts than the info-only fetch above so it isn't cut short.
+            addOption("-R", "3")
+            addOption("--socket-timeout", "20")
+        }
+        return getVideoInfo(request)
     }
 
     @Serializable
@@ -227,8 +454,6 @@ object DownloadUtil {
         val videoClips: List<VideoClip>,
         val splitByChapter: Boolean,
         val debug: Boolean,
-        val proxy: Boolean,
-        val proxyUrl: String,
         val newTitle: String,
         val userAgentString: String,
         val outputTemplate: String,
@@ -237,8 +462,10 @@ object DownloadUtil {
         val restrictFilenames: Boolean,
         val supportAv1HardwareDecoding: Boolean,
         val forceIpv4: Boolean,
+        val noCheckCertificate: Boolean,
         val mergeAudioStream: Boolean,
         val mergeToMkv: Boolean,
+        val downloadDocs: Boolean = false,
     ) {
         companion object {
             val EMPTY =
@@ -281,8 +508,6 @@ object DownloadUtil {
                     videoClips = emptyList(),
                     splitByChapter = false,
                     debug = false,
-                    proxy = false,
-                    proxyUrl = "",
                     newTitle = "",
                     userAgentString = "",
                     outputTemplate = "",
@@ -291,9 +516,11 @@ object DownloadUtil {
                     restrictFilenames = false,
                     supportAv1HardwareDecoding = false,
                     forceIpv4 = false,
+                    noCheckCertificate = false,
                     mergeAudioStream = false,
                     mergeToMkv = false,
                     useCustomAudioPreset = false,
+                    downloadDocs = false,
                 )
 
             fun createFromPreferences(): DownloadPreferences {
@@ -339,8 +566,6 @@ object DownloadUtil {
                     videoClips = emptyList(),
                     splitByChapter = false,
                     debug = DEBUG.getBoolean(),
-                    proxy = PROXY.getBoolean(),
-                    proxyUrl = PROXY_URL.getString(),
                     newTitle = "",
                     userAgentString =
                         USER_AGENT_STRING.run { if (USER_AGENT.getBoolean()) getString() else "" },
@@ -350,6 +575,7 @@ object DownloadUtil {
                     restrictFilenames = RESTRICT_FILENAMES.getBoolean(),
                     supportAv1HardwareDecoding = checkIfAv1HardwareAccelerated(),
                     forceIpv4 = FORCE_IPV4.getBoolean(),
+                    noCheckCertificate = NO_CHECK_CERTIFICATE.getBoolean(),
                     mergeAudioStream = false,
                     mergeToMkv =
                         (downloadSubtitle && embedSubtitle) || MERGE_OUTPUT_MKV.getBoolean(),
@@ -358,67 +584,187 @@ object DownloadUtil {
         }
     }
 
-    private fun YoutubeDLRequest.enableCookies(userAgentString: String): YoutubeDLRequest =
-        this.addOption("--cookies", context.getCookiesFile().absolutePath).apply {
+    private fun YoutubeDLRequest.enableCookies(userAgentString: String): YoutubeDLRequest {
+        refreshCookiesFile()
+        return this.addOption("--cookies", context.getCookiesFile().absolutePath).apply {
             if (userAgentString.isNotEmpty()) {
                 addOption("--add-header", "User-Agent:$userAgentString")
             }
         }
+    }
 
-    private fun YoutubeDLRequest.enableProxy(proxyUrl: String): YoutubeDLRequest =
-        this.addOption("--proxy", proxyUrl)
+    /**
+     * Rebuilds the on-disk Netscape cookie file from the current in-memory WebView cookie store.
+     * Called automatically before every download when cookies are enabled.
+     */
+    fun refreshCookiesFile() {
+        context.getCookiesFile().let { cookiesFile ->
+            getCookieListFromDatabase()
+                .mapCatching { it.toCookiesFileContent() }
+                // Use mapCatching (not onSuccess) so an IOException from writeText
+                // (e.g. disk full) is captured inside the Result and handled by the
+                // onFailure below, rather than propagating as an uncaught exception
+                // and leaving a partial/corrupt cookies.txt on disk.
+                .mapCatching { content -> FileUtil.writeContentToFile(content, cookiesFile) }
+                .onFailure { err ->
+                    Log.w(TAG, "Failed to refresh cookies file: ${err.message}")
+                    if (cookiesFile.exists()) cookiesFile.delete()
+                }
+        }
+    }
 
     private fun YoutubeDLRequest.useDownloadArchive(): YoutubeDLRequest =
         this.addOption("--download-archive", context.getArchiveFile().absolutePath)
 
+    /**
+     * Reads cookies for every saved [CookieProfile] URL using the documented
+     * [android.webkit.CookieManager] public API.
+     *
+     * ## Why this replaced the old SQLite approach
+     * The old implementation opened the Chromium WebView cookie database file directly with
+     * [android.database.sqlite.SQLiteDatabase]. That was fragile in three ways:
+     *  1. The WebView process may hold a write lock on the file → SQLITE_BUSY / SQLITE_LOCKED
+     *     errors returned no cookies at all.
+     *  2. The internal DB path (`app_webview/Default/Cookies` vs `app_webview/Cookies`) varies
+     *     across Android / WebView versions and required brittle path detection.
+     *  3. The Chromium cookie table schema is an implementation detail that can change without
+     *     notice.
+     *
+     * [CookieManager.getCookie] goes through the same process that owns the cookie store, so
+     * there is no locking conflict, no internal paths, and no schema dependency.
+     *
+     * ## Limitations
+     * [CookieManager.getCookie] returns only `name=value` pairs — expiry, Secure, HttpOnly, and
+     * Path attributes are not accessible via this API. yt-dlp needs only name and value to
+     * authenticate requests, so this is not a practical limitation.
+     */
     @CheckResult
     fun getCookieListFromDatabase(): Result<List<Cookie>> = runCatching {
-        CookieManager.getInstance().run {
-            if (!hasCookies()) throw Exception("There is no cookies in the database!")
-            flush()
-        }
-        SQLiteDatabase.openDatabase(
-                context.dataDir.resolve("app_webview/Default/Cookies").absolutePath,
-                null,
-                OPEN_READONLY,
-            )
-            .run {
-                val projection =
-                    arrayOf(
-                        CookieScheme.HOST,
-                        CookieScheme.EXPIRY,
-                        CookieScheme.PATH,
-                        CookieScheme.NAME,
-                        CookieScheme.VALUE,
-                        CookieScheme.SECURE,
-                    )
-                val cookieList = mutableListOf<Cookie>()
-                query("cookies", projection, null, null, null, null, null).run {
-                    while (moveToNext()) {
-                        val expiry = getLong(getColumnIndexOrThrow(CookieScheme.EXPIRY))
-                        val name = getString(getColumnIndexOrThrow(CookieScheme.NAME))
-                        val value = getString(getColumnIndexOrThrow(CookieScheme.VALUE))
-                        val path = getString(getColumnIndexOrThrow(CookieScheme.PATH))
-                        val secure = getLong(getColumnIndexOrThrow(CookieScheme.SECURE)) == 1L
-                        val hostKey = getString(getColumnIndexOrThrow(CookieScheme.HOST))
+        val manager = CookieManager.getInstance()
+        // Flush in-memory cookies to the WebView's persistent store before reading.
+        manager.flush()
 
-                        val host = if (hostKey[0] != '.') ".$hostKey" else hostKey
-                        cookieList.add(
+        // Fetch all saved profile URLs from Room first — we need to know whether any
+        // profile uses manual cookies before deciding if hasCookies() matters.
+        val profiles = runBlocking(Dispatchers.IO) {
+            DatabaseUtil.getCookieProfileList()
+        }
+
+        if (profiles.isEmpty()) {
+            throw Exception(
+                "No cookie profiles configured. " +
+                "Please go to Settings → Network → Cookies and add the site you want to download from."
+            )
+        }
+
+        // Only require WebView cookies when NO profile has manually-pasted content.
+        // If at least one profile has manual content, skip this check — those cookies
+        // are read from the profile's content field, not from CookieManager.
+        if (profiles.none { it.content.isNotEmpty() } && !manager.hasCookies()) {
+            throw Exception(
+                "No cookies found in the browser. " +
+                "Please open Settings → Network → Cookies, tap a profile, " +
+                "then tap 'Generate cookies' and log in to the website."
+            )
+        }
+
+        val seen = HashSet<String>() // deduplication key: "domain|name"
+        val cookies = mutableListOf<Cookie>()
+
+        for (profile in profiles) {
+
+            // ------------------------------------------------------------------
+            // Manual cookie path: the user pasted cookies directly into the
+            // profile. Parse them and skip the CookieManager lookup entirely.
+            // ------------------------------------------------------------------
+            if (profile.content.isNotEmpty()) {
+                val manual = parseCookieContent(profile.url, profile.content)
+                if (manual.isNotEmpty()) {
+                    manual.forEach { c ->
+                        val key = "${c.domain}|${c.name}"
+                        if (seen.add(key)) cookies.add(c)
+                    }
+                    Log.d(TAG, "Profile '${profile.url}': using ${manual.size} manual cookie(s)")
+                    continue // skip CookieManager for this profile
+                }
+                Log.w(TAG, "Profile '${profile.url}': content is set but parsing returned 0 cookies")
+            }
+
+            // ------------------------------------------------------------------
+            // Automatic path: read cookies from the in-app WebView's CookieManager.
+            // ------------------------------------------------------------------
+            // Normalise to HTTPS. CookieManager.getCookie() with an http:// URL silently
+            // omits all Secure-flagged cookies. Facebook session cookies (c_user, xs),
+            // Instagram session cookies (sessionid, csrftoken), and virtually every other
+            // social-media auth cookie carry the Secure flag, so an http:// query returns
+            // an empty or incomplete cookie string — causing silent auth failures.
+            val rawUrl = when {
+                profile.url.startsWith("https://") -> profile.url
+                profile.url.startsWith("http://")  -> profile.url.replaceFirst("http://", "https://")
+                else                               -> "https://${profile.url}"
+            }
+            val host = Uri.parse(rawUrl).host ?: continue
+
+            // Query both the plain and www-prefixed variants because some sites set their
+            // session cookies on "facebook.com" while others use "www.facebook.com".
+            val urlVariants = buildList {
+                add(rawUrl)
+                if (host.startsWith("www.")) {
+                    add(rawUrl.replaceFirst("://www.", "://"))
+                } else {
+                    add(rawUrl.replaceFirst("://", "://www."))
+                }
+            }
+
+            // Use the registered (base) domain rather than the exact queried hostname.
+            // Example: querying "https://www.facebook.com" gives host "www.facebook.com".
+            // Facebook sets cookies on ".facebook.com", so writing ".www.facebook.com" in
+            // the Netscape file means yt-dlp would NOT send those cookies to subdomains like
+            // graph.facebook.com, video.facebook.com, etc., breaking authenticated downloads.
+            // Stripping the leading "www." gives ".facebook.com" which covers all subdomains.
+            val baseDomain = "." + if (host.startsWith("www.")) host.removePrefix("www.") else host
+
+            for (url in urlVariants) {
+                // getCookie returns "name1=val1; name2=val2; ..." or null if nothing is set.
+                val raw = manager.getCookie(url) ?: continue
+                raw.split(";").forEach rawCookie@{ pair ->
+                    val eqIdx = pair.indexOf('=')
+                    if (eqIdx < 0) return@rawCookie
+                    val name  = pair.substring(0, eqIdx).trim()
+                    // Do NOT trim value — some cookies intentionally have leading/trailing
+                    // spaces in their value, and we must preserve those exactly.
+                    val value = pair.substring(eqIdx + 1)
+                    if (name.isEmpty()) return@rawCookie
+                    val dedupKey = "$baseDomain|$name"
+                    if (seen.add(dedupKey)) {
+                        cookies.add(
                             Cookie(
-                                domain = host,
-                                name = name,
-                                value = value,
-                                path = path,
-                                secure = secure,
-                                expiry = expiry,
+                                domain = baseDomain,
+                                name   = name,
+                                value  = value,
+                                includeSubdomains = true,
+                                path   = "/",
+                                // CookieManager does not expose Secure, HttpOnly, or expiry —
+                                // yt-dlp does not require these for authentication.
+                                secure    = false,
+                                expiry    = 0L,
+                                isHttpOnly = false,
                             )
                         )
                     }
-                    close()
                 }
-                close()
-                cookieList
             }
+        }
+
+        if (cookies.isEmpty()) {
+            throw Exception(
+                "No cookies could be retrieved for the saved profiles. " +
+                "Please open the cookie browser and log in to each site again."
+            )
+        }
+
+        Log.d(TAG, "getCookieListFromDatabase: extracted ${cookies.size} cookies for ${cookies.distinctBy { it.domain }.size} domain(s)")
+        cookies
     }
 
     fun List<Cookie>.toCookiesFileContent(): String =
@@ -427,11 +773,66 @@ object DownloadUtil {
             }
             .toString()
 
+    /** Convenience wrapper: reads cookies and serialises them to Netscape file format. */
     fun getCookiesContentFromDatabase(): Result<String> =
         getCookieListFromDatabase().mapCatching { it.toCookiesFileContent() }
 
-    private fun YoutubeDLRequest.enableAria2c(): YoutubeDLRequest =
-        this.addOption("--downloader", "libaria2c.so")
+    private fun YoutubeDLRequest.enableAria2c(): YoutubeDLRequest {
+        // FIX: addOption() builds a raw argv array — no shell quoting involved.
+        // The old value  aria2c:"-x 8 ..."  passes literal " characters to yt-dlp.
+        // Python's shlex.split() inside yt-dlp treats the whole quoted block as ONE
+        // argument, so aria2c received a single malformed string, ignored all flags,
+        // and fell back to single-connection mode → no speed boost + progress = -1.
+        // Correct form: no quotes, values separated by spaces, each flag is its own token.
+        //
+        // PROTOCOL SCOPING: aria2c excels at contiguous HTTP(S)/FTP downloads but adds
+        // little for fragmented DASH/HLS (e.g. YouTube high-res, live streams), where
+        // yt-dlp's native --concurrent-fragments is more reliable. We therefore restrict
+        // aria2c to direct protocols only and let native handle fragmented streams, so
+        // both paths can run their respective parallelism (see the call site).
+        //
+        // aria2c args:
+        // -x N  = max N connections per server (user-controlled via ARIA2C_CONNECTIONS)
+        // -s N  = split download into N parallel streams
+        // -k 1M = minimum chunk size 1 MB (allows aggressive splitting; aria2 default 20M)
+        // --file-allocation=none   = no preallocation (faster on Android / SAF temp dirs)
+        // --max-tries / --retry-wait = resilience against transient network errors
+        // --console-log-level=warn = keep logs clean without breaking progress parsing
+        val connections = ARIA2C_CONNECTIONS.getInt()
+        return this.addOption("--downloader", "http,https,ftp,ftps:libaria2c.so")
+            .addOption(
+                "--external-downloader-args",
+                "aria2c:-x $connections -s $connections -k 1M " +
+                    "--file-allocation=none --max-tries=5 --retry-wait=2 --console-log-level=warn",
+            )
+    }
+
+    /**
+     * Resilience options applied to actual downloads so a single transient failure
+     * (network blip, slow extractor, busy storage, rate-limit) retries instead of
+     * aborting. Reliable downloads across the many sites yt-dlp supports.
+     *
+     * NOTE: the retry COUNTS below match yt-dlp's current defaults (retries=10,
+     * fragment-retries=10, file-access-retries=3, extractor-retries=3). They are set
+     * explicitly so behaviour is stable even if upstream defaults change.
+     *
+     * The real value-add is the BACK-OFF: by default yt-dlp sleeps 0s between retries,
+     * which hammers a struggling/rate-limiting server (HTTP 429) and often escalates
+     * into a temporary ban. Exponential back-off (1s, 2s, 4s … capped) lets the server
+     * recover and dramatically improves success on rate-limited / flaky sites.
+     *
+     * Intentionally NOT applied to info-probe requests, which use their own tolerant
+     * but faster policy (see getPlaylistOrVideoInfo / fetchVideoInfoFromUrl).
+     */
+    private fun YoutubeDLRequest.enableRetryOptions(): YoutubeDLRequest =
+        this.addOption("--retries", "10")
+            .addOption("--fragment-retries", "10")
+            .addOption("--extractor-retries", "3")
+            .addOption("--file-access-retries", "3")
+            // HTTP request back-off: exponential starting at 1s, capped at 120s.
+            .addOption("--retry-sleep", "exp=1:120")
+            // Fragment back-off: exponential starting at 1s, capped at 60s.
+            .addOption("--retry-sleep", "fragment:exp=1:60")
 
     private fun YoutubeDLRequest.addOptionsForVideoDownloads(
         downloadPreferences: DownloadPreferences
@@ -445,15 +846,29 @@ object DownloadUtil {
                     if (mergeAudioStream) {
                         addOption("--audio-multistreams")
                     }
+                    // When merging video+audio formats (e.g., 303+251), ensure MP4 output
+                    // This handles high-quality downloads that need audio merged
+                    if (!mergeToMkv && formatIdString.contains("+")) {
+                        val formatParts = formatIdString.split("+")
+                        if (formatParts.size >= 2) {
+                            // Multiple formats means we're merging - ensure MP4 output
+                            addOption("--remux-video", "mp4")
+                            addOption("--merge-output-format", "mp4")
+                        }
+                    }
                 } else {
                     applyFormatSorter(this, toFormatSorter())
                 }
+                
+                // No player_skip - format IDs selected by user are passed explicitly via -f flag
+                // This ensures correct format is downloaded regardless of client selection
+                if (downloadSubtitle && autoSubtitle && !autoTranslatedSubtitles) {
+                    addOption("--extractor-args", "youtube:skip=translated_subs")
+                }
+                
                 if (downloadSubtitle) {
                     if (autoSubtitle) {
                         addOption("--write-auto-subs")
-                        if (!autoTranslatedSubtitles) {
-                            addOption("--extractor-args", "youtube:skip=translated_subs")
-                        }
                     }
                     subtitleLanguage
                         .takeIf { it.isNotEmpty() }
@@ -564,14 +979,17 @@ object DownloadUtil {
         this.apply {
             with(preferences) {
                 addOption("-x")
+                
+                // No player_skip for audio - format ID explicitly passed
+                if (downloadSubtitle && autoSubtitle && !autoTranslatedSubtitles) {
+                    addOption("--extractor-args", "youtube:skip=translated_subs")
+                }
+                
                 if (downloadSubtitle) {
                     addOption("--write-subs")
 
                     if (autoSubtitle) {
                         addOption("--write-auto-subs")
-                        if (!autoTranslatedSubtitles) {
-                            addOption("--extractor-args", "youtube:skip=translated_subs")
-                        }
                     }
                     subtitleLanguage
                         .takeIf { it.isNotEmpty() }
@@ -589,17 +1007,19 @@ object DownloadUtil {
                     if (mergeAudioStream) {
                         addOption("--audio-multistreams")
                     }
-                } else if (convertAudio) {
-                    when (audioConvertFormat) {
-                        CONVERT_MP3 -> {
-                            addOption("--audio-format", "mp3")
-                        }
+                } else {
+                    addOption("-f", "ba/b")
+                    if (convertAudio) {
+                        when (audioConvertFormat) {
+                            CONVERT_MP3 -> {
+                                addOption("--audio-format", "mp3")
+                            }
 
-                        CONVERT_M4A -> {
-                            addOption("--audio-format", "m4a")
+                            CONVERT_M4A -> {
+                                addOption("--audio-format", "m4a")
+                            }
                         }
                     }
-                } else {
                     applyFormatSorter(preferences, toAudioFormatSorter())
                 }
 
@@ -625,36 +1045,125 @@ object DownloadUtil {
             }
         }
 
+    @CheckResult
+    fun writeDocsTextFile(videoInfo: VideoInfo): Result<String> = runCatching {
+        val title = videoInfo.title.ifBlank { "video" }
+        val safeTitle = title.replace(Regex("""[<>:"/\\|?*]"""), "_")
+            .take(100)
+        val docsDir = FileUtil.getDocsDirectory()
+        val file = File(docsDir, "$safeTitle - Info.txt")
+        val content = buildString {
+            appendLine("═══════════════════════════════════════")
+            appendLine("  VIDEO INFORMATION")
+            appendLine("═══════════════════════════════════════")
+            appendLine()
+            appendLine("Title:")
+            appendLine(videoInfo.title)
+            appendLine()
+            videoInfo.uploader?.let {
+                appendLine("Uploader:")
+                appendLine(it)
+                appendLine()
+            }
+            videoInfo.uploadDate?.let {
+                appendLine("Upload Date:")
+                appendLine(it)
+                appendLine()
+            }
+            videoInfo.duration?.let { sec ->
+                val minutes = (sec / 60).toInt()
+                val seconds = (sec % 60).toInt()
+                appendLine("Duration:")
+                appendLine("${minutes}m ${seconds}s")
+                appendLine()
+            }
+            videoInfo.webpageUrl?.let {
+                appendLine("URL:")
+                appendLine(it)
+                appendLine()
+            }
+            val tags = videoInfo.tags
+            if (!tags.isNullOrEmpty()) {
+                appendLine("Tags:")
+                tags.forEach { tag -> appendLine("  • $tag") }
+                appendLine()
+            }
+            val desc = videoInfo.description
+            if (!desc.isNullOrBlank()) {
+                appendLine("Description:")
+                appendLine(desc)
+                appendLine()
+            }
+            appendLine("═══════════════════════════════════════")
+            appendLine("  Generated by Cat")
+            appendLine("═══════════════════════════════════════")
+        }
+        FileUtil.writeContentToFile(content, file)
+        context.makeToast(R.string.docs_saved)
+        file.absolutePath
+    }
+
     private fun insertInfoIntoDownloadHistory(
         videoInfo: VideoInfo,
         filePaths: List<String>,
+        downloadTimeMillis: Long = -1L,
+        averageSpeedBytesPerSec: Long = -1L,
     ): List<String> =
         filePaths.onEach {
-            DatabaseUtil.insertInfo(videoInfo.toDownloadedVideoInfo(videoPath = it))
+            DatabaseUtil.insertInfo(
+                videoInfo.toDownloadedVideoInfo(
+                    videoPath = it,
+                    downloadTimeMillis = downloadTimeMillis,
+                    averageSpeedBytesPerSec = averageSpeedBytesPerSec,
+                )
+            )
         }
 
     private fun VideoInfo.toDownloadedVideoInfo(
         id: Int = 0,
         videoPath: String,
+        downloadTimeMillis: Long = -1L,
+        averageSpeedBytesPerSec: Long = -1L,
     ): DownloadedVideoInfo =
         this.run {
             DownloadedVideoInfo(
                 id = id,
                 videoTitle = title,
                 videoAuthor = uploader ?: channel ?: uploaderId.toString(),
-                videoUrl = webpageUrl ?: originalUrl.toString(),
+                videoUrl = webpageUrl ?: originalUrl ?: "",
                 thumbnailUrl = thumbnail.toHttpsUrl(),
                 videoPath = videoPath,
+                videoId = this.id,
                 extractor = extractorKey,
+                downloadTimeMillis = downloadTimeMillis,
+                averageSpeedBytesPerSec = averageSpeedBytesPerSec,
             )
         }
 
-    private fun insertSplitChapterIntoHistory(videoInfo: VideoInfo, filePaths: List<String>) =
+    private fun insertSplitChapterIntoHistory(
+        videoInfo: VideoInfo,
+        filePaths: List<String>,
+        downloadTimeMillis: Long = -1L,
+        averageSpeedBytesPerSec: Long = -1L,
+    ) =
         filePaths.onEach {
             DatabaseUtil.insertInfo(
-                videoInfo.toDownloadedVideoInfo(videoPath = it).copy(videoTitle = it.getFileName())
+                videoInfo
+                    .toDownloadedVideoInfo(
+                        videoPath = it,
+                        downloadTimeMillis = downloadTimeMillis,
+                        averageSpeedBytesPerSec = averageSpeedBytesPerSec,
+                    )
+                    .copy(videoTitle = it.getFileName())
             )
         }
+
+    private fun computeAvgSpeed(videoInfo: VideoInfo, timing: LongArray): Long {
+        val elapsed = if (timing[0] > 0L) timing[1] - timing[0] else -1L
+        if (elapsed <= 0L) return -1L
+        val fileSize = ((videoInfo.fileSize ?: videoInfo.fileSizeApprox) ?: 0.0).toLong()
+        return if (fileSize > 0L) fileSize * 1000L / elapsed else -1L
+    }
 
     @CheckResult
     fun downloadVideo(
@@ -680,10 +1189,14 @@ object DownloadUtil {
             val request = YoutubeDLRequest(url)
             val pathBuilder = StringBuilder()
             val outputBuilder = StringBuilder()
+            // Index 0 = start time ms, index 1 = end time ms
+            val downloadTiming = LongArray(2)
 
             request
                 .apply {
                     addOption("--no-mtime")
+                    addOption("--continue")
+                    enableRetryOptions()
                     //                addOption("-v")
                     if (cookies) {
                         enableCookies(userAgentString)
@@ -691,19 +1204,23 @@ object DownloadUtil {
                     if (restrictFilenames) {
                         addOption("--restrict-filenames")
                     }
-                    if (proxy) {
-                        enableProxy(proxyUrl)
-                    }
                     if (forceIpv4) {
                         addOption("-4")
+                    }
+                    if (noCheckCertificate) {
+                        addOption("--no-check-certificate")
                     }
                     if (debug) {
                         addOption("-v")
                     }
                     if (useDownloadArchive) {
                         val archiveFile = context.getArchiveFile()
-                        val archiveFileContent = archiveFile.readText()
-                        if (archiveFileContent.contains("${videoInfo.extractor} ${videoInfo.id}")) {
+                        val archiveTarget = "${videoInfo.extractor} ${videoInfo.id}"
+                        val alreadyDownloaded = archiveFile.exists() &&
+                            archiveFile.bufferedReader().useLines { lines ->
+                                lines.any { it.trimEnd() == archiveTarget }
+                            }
+                        if (alreadyDownloaded) {
                             return Result.failure(
                                 YoutubeDLException(
                                     context.getString(R.string.download_archive_error)
@@ -729,8 +1246,13 @@ object DownloadUtil {
                         addOption("--no-playlist")
                     }
 
+                    // aria2c is scoped to contiguous protocols (see enableAria2c), so
+                    // concurrent fragments can run alongside it for DASH/HLS streams.
                     if (aria2c) {
                         enableAria2c()
+                        if (concurrentFragments > 1) {
+                            addOption("--concurrent-fragments", concurrentFragments)
+                        }
                     } else if (concurrentFragments > 1) {
                         addOption("--concurrent-fragments", concurrentFragments)
                     }
@@ -775,8 +1297,9 @@ object DownloadUtil {
                     if (newTitle.isNotEmpty()) {
                         addCommands(listOf("--replace-in-metadata", "title", ".+", newTitle))
                     }
-                    if (Build.VERSION.SDK_INT > 23 && !sdcard)
-                        addOption("-P", "temp:" + getExternalTempDir())
+                    if (Build.VERSION.SDK_INT > 23 && !sdcard) {
+                        addOption("-P", "temp:" + getExternalTempDir(videoInfo.id))
+                    }
 
                     if (splitByChapter) {
                         addOption("-o", OUTPUT_TEMPLATE_CHAPTERS)
@@ -797,8 +1320,10 @@ object DownloadUtil {
                     for (s in request.buildCommand()) Log.d(TAG, s)
                 }
                 .runCatching {
+                    val dlStartTime = System.currentTimeMillis()
                     YoutubeDL.getInstance()
                         .execute(request = this, processId = taskId, callback = progressCallback)
+                        .also { downloadTiming[0] = dlStartTime; downloadTiming[1] = System.currentTimeMillis() }
                 }
                 .onFailure { th ->
                     return if (
@@ -812,6 +1337,8 @@ object DownloadUtil {
                             videoInfo = videoInfo,
                             downloadPath = pathBuilder.toString(),
                             sdcardUri = sdcardUri,
+                            downloadTimeMillis = if (downloadTiming[0] > 0L) downloadTiming[1] - downloadTiming[0] else -1L,
+                            averageSpeedBytesPerSec = computeAvgSpeed(videoInfo, downloadTiming),
                         )
                     } else Result.failure(th)
                 }
@@ -820,6 +1347,8 @@ object DownloadUtil {
                 videoInfo = videoInfo,
                 downloadPath = pathBuilder.toString(),
                 sdcardUri = sdcardUri,
+                downloadTimeMillis = if (downloadTiming[0] > 0L) downloadTiming[1] - downloadTiming[0] else -1L,
+                averageSpeedBytesPerSec = computeAvgSpeed(videoInfo, downloadTiming),
             )
         }
     }
@@ -829,6 +1358,8 @@ object DownloadUtil {
         videoInfo: VideoInfo,
         downloadPath: String,
         sdcardUri: String,
+        downloadTimeMillis: Long = -1L,
+        averageSpeedBytesPerSec: Long = -1L,
     ): Result<List<String>> =
         preferences.run {
             val fileName =
@@ -848,9 +1379,17 @@ object DownloadUtil {
                         if (privateMode) {
                             return Result.success(emptyList())
                         } else if (splitByChapter) {
-                            insertSplitChapterIntoHistory(videoInfo, it)
+                            insertSplitChapterIntoHistory(
+                                videoInfo, it,
+                                downloadTimeMillis = downloadTimeMillis,
+                                averageSpeedBytesPerSec = averageSpeedBytesPerSec,
+                            )
                         } else {
-                            insertInfoIntoDownloadHistory(videoInfo, it)
+                            insertInfoIntoDownloadHistory(
+                                videoInfo, it,
+                                downloadTimeMillis = downloadTimeMillis,
+                                averageSpeedBytesPerSec = averageSpeedBytesPerSec,
+                            )
                         }
                     }
             } else {
@@ -863,9 +1402,17 @@ object DownloadUtil {
                         else
                             Result.success(
                                 if (splitByChapter) {
-                                    insertSplitChapterIntoHistory(videoInfo, this)
+                                    insertSplitChapterIntoHistory(
+                                        videoInfo, this,
+                                        downloadTimeMillis = downloadTimeMillis,
+                                        averageSpeedBytesPerSec = averageSpeedBytesPerSec,
+                                    )
                                 } else {
-                                    insertInfoIntoDownloadHistory(videoInfo, this)
+                                    insertInfoIntoDownloadHistory(
+                                        videoInfo, this,
+                                        downloadTimeMillis = downloadTimeMillis,
+                                        averageSpeedBytesPerSec = averageSpeedBytesPerSec,
+                                    )
                                 }
                             )
                     }
@@ -904,6 +1451,9 @@ object DownloadUtil {
                     if (cookies) {
                         enableCookies(userAgentString)
                     }
+                    if (noCheckCertificate) {
+                        addOption("--no-check-certificate")
+                    }
                 }
             }
 
@@ -923,7 +1473,9 @@ object DownloadUtil {
             val notificationId = taskId.toNotificationId()
             val urlList = url.split(Regex("[\n ]")).filter { it.isNotBlank() }
 
-            ToastUtil.makeToastSuspend(context.getString(R.string.start_execute))
+            App.applicationScope.launch(Dispatchers.Main) {
+                context.makeToast(R.string.start_execute)
+            }
             val request =
                 YoutubeDLRequest(urlList).apply {
                     commandDirectory.takeIf { it.isNotEmpty() }?.let { addOption("-P", it) }
@@ -944,6 +1496,9 @@ object DownloadUtil {
                     )
                     if (cookies) {
                         enableCookies(userAgentString)
+                    }
+                    if (noCheckCertificate) {
+                        addOption("--no-check-certificate")
                     }
                 }
 

@@ -8,13 +8,14 @@ import android.util.Log
 import com.junkfood.seal.App.Companion.context
 import com.junkfood.seal.download.DownloaderV2
 import com.junkfood.seal.util.NotificationUtil
-import com.junkfood.seal.util.ToastUtil
+import com.junkfood.seal.util.makeToast
 import com.yausername.youtubedl_android.YoutubeDL
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.get
 
 class NotificationActionReceiver : BroadcastReceiver(), KoinComponent {
-    val downloader = get<DownloaderV2>()
 
     companion object {
         private const val TAG = "CancelReceiver"
@@ -32,13 +33,17 @@ class NotificationActionReceiver : BroadcastReceiver(), KoinComponent {
 
     override fun onReceive(context: Context?, intent: Intent?) {
         if (intent == null) return
+        // Koin is guaranteed to be started by the time the OS delivers a broadcast,
+        // so it is safe to resolve the DownloaderV2 dependency here rather than in a
+        // field initializer (which runs at class-load time and could precede startKoin).
+        val downloader = get<DownloaderV2>()
         val notificationId = intent.getIntExtra(NOTIFICATION_ID_KEY, 0)
         val action = intent.getIntExtra(ACTION_KEY, ACTION_CANCEL_TASK)
         Log.d(TAG, "onReceive: $action")
         when (action) {
             ACTION_CANCEL_TASK -> {
                 val taskId = intent.getStringExtra(TASK_ID_KEY)
-                cancelTask(taskId, notificationId)
+                cancelTask(taskId, notificationId, downloader)
             }
 
             ACTION_ERROR_REPORT -> {
@@ -48,7 +53,7 @@ class NotificationActionReceiver : BroadcastReceiver(), KoinComponent {
         }
     }
 
-    private fun cancelTask(taskId: String?, notificationId: Int) {
+    private fun cancelTask(taskId: String?, notificationId: Int, downloader: DownloaderV2) {
         if (taskId.isNullOrEmpty()) return
         NotificationUtil.cancelNotification(notificationId)
         val res = downloader.cancel(taskId)
@@ -62,8 +67,14 @@ class NotificationActionReceiver : BroadcastReceiver(), KoinComponent {
     }
 
     private fun copyErrorReport(error: String, notificationId: Int) {
-        App.clipboard.setPrimaryClip(ClipData.newPlainText(null, error))
-        context.let { ToastUtil.makeToastSuspend(it.getString(R.string.error_copied)) }
+        runCatching {
+            App.clipboard.setPrimaryClip(ClipData.newPlainText(null, error))
+            App.applicationScope.launch(Dispatchers.Main) {
+                context.makeToast(R.string.error_copied)
+            }
+        }.onFailure { e ->
+            Log.w(TAG, "Failed to copy error report to clipboard: ${e.message}")
+        }
         NotificationUtil.cancelNotification(notificationId)
     }
 }

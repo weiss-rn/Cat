@@ -12,22 +12,41 @@ import android.webkit.MimeTypeMap
 import androidx.annotation.CheckResult
 import androidx.core.content.FileProvider
 import androidx.documentfile.provider.DocumentFile
+import com.junkfood.seal.App
 import com.junkfood.seal.App.Companion.context
 import com.junkfood.seal.R
+import com.junkfood.seal.util.PreferenceUtil.getBoolean
 import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import okhttp3.internal.closeQuietly
 
 const val AUDIO_REGEX = "(mp3|aac|opus|m4a)$"
 const val THUMBNAIL_REGEX = "\\.(jpg|png)$"
 const val SUBTITLE_REGEX = "\\.(lrc|vtt|srt|ass|json3|srv.|ttml)$"
-private const val PRIVATE_DIRECTORY_SUFFIX = ".Seal"
+private const val PRIVATE_DIRECTORY_SUFFIX = ".Cat"
 
 object FileUtil {
+    private val TEMP_SUFFIXES =
+        listOf(
+            ".part",
+            ".ytdl",
+            ".aria2",
+            ".tmp",
+            ".temp",
+            ".partial",
+            ".download",
+            ".info.json",
+        )
+
     fun openFileFromResult(downloadResult: Result<List<String>>) {
         val filePaths = downloadResult.getOrNull()
         if (filePaths.isNullOrEmpty()) return
         openFile(filePaths.first()) {
-            ToastUtil.makeToastSuspend(context.getString(R.string.file_unavailable))
+            App.applicationScope.launch(Dispatchers.Main) {
+                context.makeToast(R.string.file_unavailable)
+            }
         }
     }
 
@@ -128,6 +147,28 @@ object FileUtil {
 
     @CheckResult
     fun moveFilesToSdcard(tempPath: File, sdcardUri: String): Result<List<String>> {
+        // Fast path (opt-in): resolve the SAF tree URI to a real filesystem path and let a
+        // shell-UID `mv` do the work. This is both far faster than the SAF stream-copy below and
+        // the only way to reach restricted destinations (e.g. another app's Android/data).
+        // Any failure — Shizuku absent, permission revoked, command error — falls through to the
+        // SAF path so a download never dies because of the mover.
+        val shizukuDest =
+            if (SHIZUKU_MOVE_ENABLED.getBoolean() && ShizukuFileAccess.isReadyForFileOps()) {
+                ShizukuFileAccess.resolveTreeUriRealPath(Uri.parse(sdcardUri))
+            } else null
+        if (shizukuDest != null) {
+            val result = runBlocking {
+                ShizukuFileAccess.moveDirectoryContents(tempPath, shizukuDest)
+            }
+            if (result.isSuccess) {
+                tempPath.deleteRecursively()
+                return result
+            }
+            Log.w(
+                "FileUtil",
+                "Shizuku move failed, falling back to SAF: ${result.exceptionOrNull()}",
+            )
+        }
         val uriList = mutableListOf<String>()
         val destDir =
             Uri.parse(sdcardUri).run {
@@ -175,6 +216,52 @@ object FileUtil {
         return count
     }
 
+    fun deleteTempFilesByBaseName(baseName: String): Int {
+        val safeName = baseName.trim()
+        if (safeName.length < 3) return 0
+        val tempDir = getExternalTempDir()
+        var count = 0
+        tempDir.walkTopDown().forEach {
+            if (matchesTempBaseName(it.name, safeName)) {
+                if (it.isDirectory) {
+                    if (it.deleteRecursively()) count++
+                } else if (shouldDeleteTempFile(it.name) && it.delete()) {
+                    count++
+                }
+            }
+        }
+        return count
+    }
+
+    fun deleteTempFilesForTask(baseName: String, videoId: String?): Int {
+        val safeId = videoId?.trim().orEmpty()
+        var count = 0
+        if (safeId.isNotEmpty()) {
+            val idDir = getExternalTempDir().resolve(safeId)
+            if (idDir.exists() && idDir.deleteRecursively()) {
+                count++
+            }
+            return count
+        }
+        return deleteTempFilesByBaseName(baseName)
+    }
+
+    private fun matchesTempBaseName(name: String, baseName: String): Boolean {
+        val prefixMatch = name.startsWith(baseName, ignoreCase = true)
+        if (!prefixMatch) return false
+        if (name.length == baseName.length) return true
+        val next = name[baseName.length]
+        return next == '.' || next == '_' || next == '-' || next == ' ' || next == '[' || next == '('
+    }
+
+    private fun shouldDeleteTempFile(name: String): Boolean {
+        if (TEMP_SUFFIXES.any { suffix -> name.endsWith(suffix, ignoreCase = true) }) return true
+        val lowerName = name.lowercase()
+        return lowerName.contains(".part") ||
+            lowerName.contains(".ytdl") ||
+            lowerName.contains(".aria2")
+    }
+
     fun Context.getConfigDirectory(): File = cacheDir
 
     fun Context.getConfigFile(suffix: String = "") = File(getConfigDirectory(), "config$suffix.txt")
@@ -187,6 +274,12 @@ object FileUtil {
             createEmptyFile(".nomedia")
         }
 
+    fun getExternalTempDir(child: String?): File =
+        getExternalTempDir().run {
+            child?.takeIf { it.isNotBlank() }?.let { resolve(it).also { dir -> dir.mkdirs() } }
+                ?: this
+        }
+
     fun Context.getSdcardTempDir(child: String?): File =
         getExternalTempDir().run { child?.let { resolve(it) } ?: this }
 
@@ -195,8 +288,11 @@ object FileUtil {
     fun Context.getInternalTempDir() = File(filesDir, "tmp")
 
     internal fun getExternalDownloadDirectory() =
-        File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Seal")
-            .also { it.mkdir() }
+        File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Cat")
+            .also { it.mkdirs() }
+
+    fun getDocsDirectory(): File =
+        File(getExternalDownloadDirectory(), "docs").also { it.mkdirs() }
 
     internal fun getExternalPrivateDownloadDirectory() =
         File(
@@ -204,24 +300,40 @@ object FileUtil {
             PRIVATE_DIRECTORY_SUFFIX,
         )
 
+    fun getHiddenPrivateDirectory(): File =
+        File(getExternalDownloadDirectory(), ".private").also {
+            it.mkdirs()
+            // .nomedia tells gallery apps not to index anything in this folder
+            File(it, ".nomedia").apply { if (!exists()) createNewFile() }
+        }
+
     fun File.createEmptyFile(fileName: String): Result<File> =
         this.runCatching {
-                mkdirs()
-                resolve(fileName).apply { this@apply.createNewFile() }
+            mkdirs()
+            resolve(fileName).also { file ->
+                if (!file.exists() && !file.createNewFile()) {
+                    throw java.io.IOException("Failed to create file: ${file.absolutePath}")
+                }
             }
-            .onFailure { it.printStackTrace() }
+        }.onFailure { it.printStackTrace() }
 
     fun writeContentToFile(content: String, file: File): File = file.apply { writeText(content) }
 
+    fun isPrimaryStorageUri(treeUri: Uri): Boolean {
+        val path = treeUri.path ?: return false
+        return path.contains("primary:")
+    }
+
     fun getRealPath(treeUri: Uri): String {
         val path: String = treeUri.path.toString()
-        Log.d(TAG, path)
-        if (!path.contains("primary:")) {
-            ToastUtil.makeToast("This directory is not supported")
-            return getExternalDownloadDirectory().absolutePath
+        return if (path.contains("primary:")) {
+            val last: String = path.split("primary:").last()
+            Environment.getExternalStorageDirectory().absolutePath + "/$last"
+        } else {
+            Log.w(TAG, "Non-primary URI path: $path — caller should use DocumentFile API")
+            context.makeToast(R.string.directory_not_supported)
+            getExternalDownloadDirectory().absolutePath
         }
-        val last: String = path.split("primary:").last()
-        return Environment.getExternalStorageDirectory().absolutePath + "/$last"
     }
 
     private const val TAG = "FileUtil"

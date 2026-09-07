@@ -15,7 +15,11 @@ data class DownloadedVideoInfo(
     val videoUrl: String,
     val thumbnailUrl: String,
     val videoPath: String,
+    @ColumnInfo(defaultValue = "") val videoId: String = "",
     @ColumnInfo(defaultValue = "Unknown") val extractor: String = "Unknown",
+    @ColumnInfo(defaultValue = "-1") val downloadTimeMillis: Long = -1L,
+    @ColumnInfo(defaultValue = "-1") val averageSpeedBytesPerSec: Long = -1L,
+    @ColumnInfo(defaultValue = "0") val isHidden: Boolean = false,
 ) {
     @Ignore
     constructor() :
@@ -26,6 +30,10 @@ data class DownloadedVideoInfo(
             videoUrl = "Url",
             thumbnailUrl = "Thumbnail",
             videoPath = "Path",
+            videoId = "",
             extractor = "Unknown",
+            downloadTimeMillis = -1L,
+            averageSpeedBytesPerSec = -1L,
+            isHidden = false,
         )
 }

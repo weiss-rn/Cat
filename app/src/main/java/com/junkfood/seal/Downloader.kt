@@ -18,9 +18,9 @@ import com.junkfood.seal.util.DownloadUtil
 import com.junkfood.seal.util.FileUtil
 import com.junkfood.seal.util.NotificationUtil
 import com.junkfood.seal.util.PlaylistEntry
+import com.junkfood.seal.util.makeToast
 import com.junkfood.seal.util.PlaylistResult
 import com.junkfood.seal.util.PreferenceUtil.getString
-import com.junkfood.seal.util.ToastUtil
 import com.junkfood.seal.util.VideoInfo
 import com.junkfood.seal.util.toHttpsUrl
 import com.yausername.youtubedl_android.YoutubeDL
@@ -121,7 +121,7 @@ object Downloader {
 
         fun onCopyError(clipboardManager: ClipboardManager) {
             clipboardManager.setText(AnnotatedString(currentLine))
-            ToastUtil.makeToast(R.string.error_copied)
+            context.makeToast(R.string.error_copied)
         }
 
         fun onCancel() {
@@ -185,7 +185,8 @@ object Downloader {
         return downloaderState.value is State.Idle
     }
 
-    fun makeKey(url: String, templateName: String): String = "${templateName}_$url"
+    fun makeKey(url: String, templateName: String): String =
+        "${templateName.length}\u0000${templateName}\u0000$url"
 
     fun onTaskStarted(template: CommandTemplate, url: String) =
         CustomCommandTask(
@@ -322,14 +323,21 @@ object Downloader {
         require(url.isNotEmpty() || videoInfo != null)
 
         if (!isDownloaderAvailable()) {
-            ToastUtil.makeToast(R.string.task_added)
+            context.makeToast(R.string.task_added)
+            val maxWaitMs = 5 * 60 * 1000L // 5 minutes max — prevents permanent coroutine leak
             applicationScope
                 .launch(Dispatchers.Default) {
-                    while (!isDownloaderAvailable()) {
+                    val deadline = System.currentTimeMillis() + maxWaitMs
+                    while (!isDownloaderAvailable() && System.currentTimeMillis() < deadline) {
                         delay(3000)
                     }
                 }
-                .invokeOnCompletion {
+                .invokeOnCompletion { cause ->
+                    if (cause != null) return@invokeOnCompletion
+                    if (!isDownloaderAvailable()) {
+                        Log.w(TAG, "addToDownloadQueue: downloader never became idle; dropping task.")
+                        return@invokeOnCompletion
+                    }
                     videoInfo?.let {
                         downloadVideoWithInfo(info = videoInfo, preferences = preferences)
                     } ?: getInfoAndDownload(url, preferences)
@@ -526,7 +534,9 @@ object Downloader {
         th.printStackTrace()
         val resId =
             if (isFetchingInfo) R.string.fetch_info_error_msg else R.string.download_error_msg
-        ToastUtil.makeToastSuspend(context.getString(resId))
+        applicationScope.launch(Dispatchers.Main) {
+            context.makeToast(resId)
+        }
 
         val notificationTitle = title ?: url
 
@@ -550,7 +560,7 @@ object Downloader {
     }
 
     fun cancelDownload() {
-        ToastUtil.makeToast(context.getString(R.string.task_canceled))
+        context.makeToast(R.string.task_canceled)
         currentJob?.cancel(CancellationException(context.getString(R.string.task_canceled)))
         updateState(State.Idle)
         clearProgressState(isFinished = false)

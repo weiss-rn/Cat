@@ -184,7 +184,13 @@ dependencies {
 
     implementation(libs.bundles.youtubedlAndroid)
 
+    // Local ffmpeg module with current binaries (replaces youtubedl-android:ffmpeg artifact)
+    implementation(project(":ffmpeg"))
+
     implementation(libs.mmkv)
+
+    implementation(libs.shizuku.api)
+    implementation(libs.shizuku.provider)
 
     testImplementation(libs.junit4)
     androidTestImplementation(libs.androidx.test.ext)

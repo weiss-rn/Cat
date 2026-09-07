@@ -32,7 +32,7 @@ data class VideoInfo(
     //    @SerialName("release_timestamp") val releaseTimestamp: Int? = null,
     @SerialName("comment_count") val commentCount: Int? = null,
     val chapters: List<Chapter>? = null,
-    @SerialName("like_count") val likeCount: Int? = null,
+    @SerialName("like_count") val likeCount: Long? = null,
     val channel: String? = null,
     //    @SerialName("channel_follower_count") val channelFollowerCount: Int? = null,
     @SerialName("upload_date") val uploadDate: String? = null,
@@ -71,7 +71,30 @@ data class VideoInfo(
     @SerialName("requested_formats") val requestedFormats: List<Format>? = null,
     val filename: String? = null,
     @SerialName("_type") val type: String? = null,
+    // Only present when yt-dlp was run with --write-comments (see
+    // DownloadUtil.fetchCommentsFromUrl). Each entry is a single comment or reply; replies
+    // are distinguished by `parent` being a comment id instead of the literal string "root".
+    val comments: List<Comment>? = null,
 ) : YoutubeDLInfo
+
+@Serializable
+data class Comment(
+    val id: String = "",
+    val text: String = "",
+    val author: String = "",
+    @SerialName("author_id") val authorId: String? = null,
+    @SerialName("author_thumbnail") val authorThumbnail: String? = null,
+    @SerialName("author_is_uploader") val authorIsUploader: Boolean = false,
+    @SerialName("author_is_verified") val authorIsVerified: Boolean = false,
+    /** "root" for a top-level comment, otherwise the id of the comment it replies to. */
+    val parent: String = "root",
+    @SerialName("like_count") val likeCount: Long? = null,
+    val timestamp: Long? = null,
+    @SerialName("is_favorited") val isFavorited: Boolean? = null,
+    @SerialName("is_pinned") val isPinned: Boolean? = null,
+) {
+    val isReply: Boolean get() = parent != "root"
+}
 
 @Serializable
 data class Format(
@@ -101,6 +124,38 @@ data class Format(
     fun containsVideo(): Boolean = vcodec != null && vcodec != "none"
 
     fun containsAudio(): Boolean = acodec != null && acodec != "none"
+    
+    /**
+     * Check if format appears to be DRM-protected based on format string
+     */
+    fun isPotentiallyDrmProtected(): Boolean {
+        val formatLower = format?.lowercase() ?: ""
+        val noteLower = formatNote?.lowercase() ?: ""
+        val drmIndicators = listOf("drm", "encrypted", "widevine", "playready", "fairplay", "protected")
+        return drmIndicators.any { formatLower.contains(it) || noteLower.contains(it) }
+    }
+    
+    /**
+     * Check if format has a valid, non-empty URL
+     */
+    fun hasValidUrl(): Boolean = !url.isNullOrBlank()
+
+    /**
+     * Get a human-readable resolution label
+     */
+    fun getResolutionLabel(): String? {
+        val h = height?.toInt()
+        return when {
+            h == null -> null
+            h >= 2160 -> "4K"
+            h >= 1440 -> "2K"
+            h >= 1080 -> "1080p"
+            h >= 720 -> "720p"
+            h >= 480 -> "480p"
+            h >= 360 -> "360p"
+            else -> "${h}p"
+        }
+    }
 }
 
 @Serializable

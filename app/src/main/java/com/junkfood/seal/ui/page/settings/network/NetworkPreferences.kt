@@ -11,6 +11,7 @@ import androidx.compose.material.icons.outlined.SignalCellular4Bar
 import androidx.compose.material.icons.outlined.SignalCellularConnectedNoInternet4Bar
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.VpnKey
+import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.Scaffold
@@ -34,6 +35,7 @@ import com.junkfood.seal.ui.component.PreferenceSubtitle
 import com.junkfood.seal.ui.component.PreferenceSwitch
 import com.junkfood.seal.ui.component.PreferenceSwitchWithDivider
 import com.junkfood.seal.util.ARIA2C
+import com.junkfood.seal.util.AUTO_RESUME_ON_RECONNECT
 import com.junkfood.seal.util.CELLULAR_DOWNLOAD
 import com.junkfood.seal.util.COOKIES
 import com.junkfood.seal.util.CUSTOM_COMMAND
@@ -111,6 +113,22 @@ fun NetworkPreferences(navigateToCookieProfilePage: () -> Unit = {}, onNavigateB
                         onClick = {
                             isDownloadWithCellularEnabled = !isDownloadWithCellularEnabled
                             updateValue(CELLULAR_DOWNLOAD, isDownloadWithCellularEnabled)
+                        },
+                    )
+                }
+
+                item {
+                    var isAutoResumeEnabled by remember {
+                        mutableStateOf(AUTO_RESUME_ON_RECONNECT.getBoolean())
+                    }
+                    PreferenceSwitch(
+                        title = stringResource(R.string.auto_resume_on_reconnect),
+                        description = stringResource(R.string.auto_resume_on_reconnect_desc),
+                        icon = Icons.Outlined.Wifi,
+                        isChecked = isAutoResumeEnabled,
+                        onClick = {
+                            isAutoResumeEnabled = !isAutoResumeEnabled
+                            updateValue(AUTO_RESUME_ON_RECONNECT, isAutoResumeEnabled)
                         },
                     )
                 }

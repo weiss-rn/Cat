@@ -5,6 +5,7 @@ package com.junkfood.seal.ui.page.settings.directory
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -52,6 +53,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -108,11 +110,15 @@ import com.junkfood.seal.util.PreferenceUtil.updateString
 import com.junkfood.seal.util.RESTRICT_FILENAMES
 import com.junkfood.seal.util.SDCARD_DOWNLOAD
 import com.junkfood.seal.util.SDCARD_URI
+import com.junkfood.seal.util.SHIZUKU_MOVE_ENABLED
+import com.junkfood.seal.util.ShizukuFileAccess
+import com.junkfood.seal.util.ShizukuFileAccess.ShizukuStatus
 import com.junkfood.seal.util.SUBDIRECTORY_EXTRACTOR
 import com.junkfood.seal.util.SUBDIRECTORY_PLAYLIST_TITLE
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import rikka.shizuku.Shizuku
 
 private const val ytdlpOutputTemplateReference = "https://github.com/yt-dlp/yt-dlp#output-template"
 private val PublicDownloadsDirectory =
@@ -167,6 +173,18 @@ fun DownloadDirectoryPreferences(onNavigateBack: () -> Unit) {
     var customCommandDirectory by COMMAND_DIRECTORY.stringState
 
     var sdcardDownload by remember { mutableStateOf(SDCARD_DOWNLOAD.getBoolean()) }
+
+    var shizukuMoveEnabled by remember { mutableStateOf(SHIZUKU_MOVE_ENABLED.getBoolean()) }
+    var shizukuStatus by remember { mutableStateOf(ShizukuFileAccess.currentStatus()) }
+    DisposableEffect(Unit) {
+        val permissionListener =
+            Shizuku.OnRequestPermissionResultListener { _, grantResult ->
+                if (grantResult == PackageManager.PERMISSION_GRANTED)
+                    shizukuStatus = ShizukuFileAccess.currentStatus()
+            }
+        ShizukuFileAccess.addPermissionResultListener(permissionListener)
+        onDispose { ShizukuFileAccess.removePermissionResultListener(permissionListener) }
+    }
 
     var showClearTempDialog by remember { mutableStateOf(false) }
     var showCustomCommandDirectoryDialog by remember { mutableStateOf(false) }
@@ -337,6 +355,53 @@ fun DownloadDirectoryPreferences(onNavigateBack: () -> Unit) {
                     enabled = !isCustomCommandEnabled && !sdcardDownload,
                 ) {
                     showSubdirectoryDialog = true
+                }
+            }
+            if (sdcardDownload) {
+                item {
+                    PreferenceSubtitle(text = stringResource(R.string.shizuku))
+                }
+                item {
+                    PreferenceSwitch(
+                        title = stringResource(R.string.shizuku_move),
+                        description = stringResource(R.string.shizuku_move_desc),
+                        icon = Icons.Outlined.Terminal,
+                        isChecked = shizukuMoveEnabled,
+                        onClick = {
+                            shizukuMoveEnabled = !shizukuMoveEnabled
+                            PreferenceUtil.updateValue(SHIZUKU_MOVE_ENABLED, shizukuMoveEnabled)
+                        },
+                    )
+                }
+                item {
+                    PreferenceItem(
+                        title = stringResource(R.string.shizuku_status_title),
+                        description =
+                            stringResource(
+                                when (shizukuStatus) {
+                                    ShizukuStatus.READY -> R.string.shizuku_status_ready
+                                    ShizukuStatus.NO_PERMISSION ->
+                                        R.string.shizuku_status_no_permission
+                                    ShizukuStatus.NOT_RUNNING -> R.string.shizuku_status_not_running
+                                    ShizukuStatus.NOT_INSTALLED ->
+                                        R.string.shizuku_status_not_installed
+                                }
+                            ),
+                        icon = Icons.Outlined.Key,
+                    ) {
+                        when (shizukuStatus) {
+                            ShizukuStatus.NO_PERMISSION -> ShizukuFileAccess.requestPermission()
+                            ShizukuStatus.NOT_INSTALLED,
+                            ShizukuStatus.NOT_RUNNING -> {
+                                scope.launch {
+                                    snackbarHostState.showSnackbar(
+                                        context.getString(R.string.shizuku_hint_start_shizuku)
+                                    )
+                                }
+                            }
+                            ShizukuStatus.READY -> Unit
+                        }
+                    }
                 }
             }
             item { PreferenceSubtitle(text = stringResource(R.string.privacy)) }

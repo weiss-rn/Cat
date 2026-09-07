@@ -10,6 +10,8 @@ import com.junkfood.seal.database.objects.CommandTemplate
 import com.junkfood.seal.database.objects.CookieProfile
 import com.junkfood.seal.database.objects.DownloadedVideoInfo
 import com.junkfood.seal.database.objects.OptionShortcut
+import com.junkfood.seal.database.objects.SavedCommentSet
+import com.junkfood.seal.database.objects.SavedVideoInfo
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -21,6 +23,18 @@ interface VideoInfoDao {
 
     @Query("select * from DownloadedVideoInfo")
     fun getDownloadHistoryFlow(): Flow<List<DownloadedVideoInfo>>
+
+    @Query("select * from DownloadedVideoInfo where isHidden = 0")
+    fun getVisibleDownloadHistoryFlow(): Flow<List<DownloadedVideoInfo>>
+
+    @Query("select * from DownloadedVideoInfo where isHidden = 1")
+    fun getHiddenDownloadHistoryFlow(): Flow<List<DownloadedVideoInfo>>
+
+    @Query("UPDATE DownloadedVideoInfo SET isHidden = :hidden WHERE id = :id")
+    suspend fun setHidden(id: Int, hidden: Boolean)
+
+    @Query("UPDATE DownloadedVideoInfo SET isHidden = :hidden, videoPath = :newPath WHERE id = :id")
+    suspend fun setHiddenAndPath(id: Int, hidden: Boolean, newPath: String)
 
     @Query("select * from DownloadedVideoInfo")
     suspend fun getDownloadHistory(): List<DownloadedVideoInfo>
@@ -53,6 +67,8 @@ interface VideoInfoDao {
     @Query("SELECT * FROM CommandTemplate") suspend fun getTemplateList(): List<CommandTemplate>
 
     @Query("select * from CookieProfile") fun getCookieProfileFlow(): Flow<List<CookieProfile>>
+
+    @Query("select * from CookieProfile") suspend fun getCookieProfileList(): List<CookieProfile>
 
     @Insert suspend fun insertTemplate(template: CommandTemplate): Long
 
@@ -87,4 +103,23 @@ interface VideoInfoDao {
     @Insert suspend fun insertShortcut(optionShortcut: OptionShortcut): Long
 
     @Transaction @Insert suspend fun insertAllShortcuts(shortcuts: List<OptionShortcut>)
+
+    @Insert suspend fun insertSavedVideoInfo(info: SavedVideoInfo): Long
+
+    @Query("SELECT * FROM SavedVideoInfo ORDER BY savedAtMillis DESC")
+    fun getSavedVideoInfoFlow(): Flow<List<SavedVideoInfo>>
+
+    @Query("SELECT * FROM SavedVideoInfo WHERE id = :id") suspend fun getSavedVideoInfoById(id: Int): SavedVideoInfo?
+
+    @Query("DELETE FROM SavedVideoInfo WHERE id = :id") suspend fun deleteSavedVideoInfoById(id: Int)
+
+    @Insert suspend fun insertSavedCommentSet(commentSet: SavedCommentSet): Long
+
+    @Query("SELECT * FROM SavedCommentSet ORDER BY savedAtMillis DESC")
+    fun getSavedCommentSetFlow(): Flow<List<SavedCommentSet>>
+
+    @Query("SELECT * FROM SavedCommentSet WHERE id = :id")
+    suspend fun getSavedCommentSetById(id: Int): SavedCommentSet?
+
+    @Query("DELETE FROM SavedCommentSet WHERE id = :id") suspend fun deleteSavedCommentSetById(id: Int)
 }

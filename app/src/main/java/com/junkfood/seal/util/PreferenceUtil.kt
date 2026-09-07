@@ -20,7 +20,6 @@ import com.kyant.monet.PaletteStyle
 import com.tencent.mmkv.MMKV
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -28,7 +27,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
@@ -52,6 +50,7 @@ const val FORMAT_SORTING = "format_sorting"
 const val SORTING_FIELDS = "sorting_fields"
 
 const val WELCOME_DIALOG = "welcome_dialog"
+const val ONBOARDING_COMPLETED = "onboarding_completed"
 const val VIDEO_DIRECTORY = "download_dir"
 const val AUDIO_DIRECTORY = "audio_dir"
 const val COMMAND_DIRECTORY = "command_directory"
@@ -77,6 +76,7 @@ const val MAX_FILE_SIZE = "max_file_size"
 const val SPONSORBLOCK = "sponsorblock"
 const val SPONSORBLOCK_CATEGORIES = "sponsorblock_categories"
 const val ARIA2C = "aria2c"
+const val ARIA2C_CONNECTIONS = "aria2c_connections"
 const val COOKIES = "cookies"
 const val USER_AGENT = "user_agent"
 const val USER_AGENT_STRING = "user_agent_string"
@@ -88,6 +88,7 @@ const val CELLULAR_DOWNLOAD = "cellular_download"
 const val RATE_LIMIT = "rate_limit"
 const val MAX_RATE = "max_rate"
 private const val HIGH_CONTRAST = "high_contrast"
+private const val GRADIENT_DARK_MODE = "gradient_dark_mode"
 const val DISABLE_PREVIEW = "disable_preview"
 const val PRIVATE_DIRECTORY = "private_directory"
 const val CROP_ARTWORK = "crop_artwork"
@@ -95,8 +96,6 @@ const val EMBED_THUMBNAIL = "embed_thumbnail"
 const val FORMAT_SELECTION = "format_selection"
 const val VIDEO_CLIP = "video_clip"
 const val SHOW_SPONSOR_MSG = "sponsor_msg_v1"
-const val PROXY = "proxy"
-const val PROXY_URL = "proxy_url"
 const val OUTPUT_TEMPLATE = "output_template"
 const val CUSTOM_OUTPUT_TEMPLATE = "custom_output_template"
 const val DOWNLOAD_ARCHIVE = "download_archive"
@@ -104,6 +103,9 @@ const val EMBED_METADATA = "embed_metadata"
 const val RESTRICT_FILENAMES = "restrict_filenames"
 const val AV1_HARDWARE_ACCELERATED = "av1_hardware_accelerated"
 const val FORCE_IPV4 = "force_ipv4"
+const val NO_CHECK_CERTIFICATE = "no_check_certificate"
+const val PROXY = "proxy"
+const val PROXY_URL = "proxy_url"
 const val MERGE_OUTPUT_MKV = "merge_to_mkv"
 const val USE_CUSTOM_AUDIO_PRESET = "custom_audio_preset"
 
@@ -112,6 +114,56 @@ const val MERGE_MULTI_AUDIO_STREAM = "multi_audio_stream"
 const val DOWNLOAD_TYPE_INITIALIZATION = "download_type_init"
 private const val DOWNLOAD_TYPE = "download_type"
 
+// Network Type Restriction
+const val NETWORK_TYPE_RESTRICTION = "network_type_restriction"
+const val NETWORK_PAUSE_DELAY_SECONDS = "network_pause_delay_seconds"
+
+// When true, tasks auto-paused by a network loss resume automatically once
+// connectivity is validated again. Manual (user) pauses are never touched.
+const val AUTO_RESUME_ON_RECONNECT = "auto_resume_on_reconnect"
+
+// Download Control
+const val MAX_CONCURRENT_DOWNLOADS = "max_concurrent_downloads"
+
+// Shizuku-backed storage access (opt-in). When true AND Shizuku is running with permission,
+// non-primary destinations (OTG/SD, restricted paths) are filled by shell mv instead of SAF
+// stream-copy; falls back to SAF automatically on any Shizuku failure.
+const val SHIZUKU_MOVE_ENABLED = "shizuku_move_enabled"
+
+// Format Selection Layout
+const val FORMAT_LIST_VIEW = "format_list_view"
+
+// When true, the format-selection screen only lists MP4-family formats
+// (mp4 video / m4a audio). Falls back to showing all formats if a site has none.
+const val FORMAT_MP4_ONLY = "format_mp4_only"
+
+// When true, a text file with video metadata (title, description, tags) is saved
+const val DOWNLOAD_DOCS = "download_docs"
+
+// Smart Notifications
+const val NOTIFICATION_SOUND = "notification_sound"
+const val NOTIFICATION_VIBRATE = "notification_vibrate"
+const val NOTIFICATION_LED = "notification_led"
+const val NOTIFICATION_SUCCESS_SOUND = "notification_success_sound"
+const val NOTIFICATION_ERROR_SOUND = "notification_error_sound"
+
+// Sponsor Support Dialog
+const val SPONSOR_DIALOG_FREQUENCY = "sponsor_dialog_frequency"  // 0=Off, 1=Weekly, 2=Monthly
+const val SPONSOR_DIALOG_LAST_SHOWN = "sponsor_dialog_last_shown"
+const val SPONSOR_FREQ_OFF = 0
+const val SPONSOR_FREQ_WEEKLY = 1
+const val SPONSOR_FREQ_MONTHLY = 2
+
+// Battery Optimization Dialog
+// NOTE: there is intentionally NO dismissal flag or cooldown here. The home-screen dialog is
+// re-evaluated fresh every time the app is opened/resumed purely from the live
+// BatteryUtil.isIgnoringBatteryOptimizations() check — if it's still not disabled, the dialog
+// shows again, every single time, no matter how many times it was dismissed before. Earlier
+// versions of this feature used a permanent "don't show again" flag (optionally with a
+// regression-detection workaround), which failed to re-show the dialog for anyone who dismissed
+// it while battery optimization was already restricted (there's no state transition to detect
+// there). Since disabling battery optimization is required for reliable background downloads,
+// this reminder must not be permanently silenceable.
 const val YT_DLP_UPDATE_CHANNEL = "yt-dlp_update_channel"
 const val YT_DLP_UPDATE_TIME = "yt-dlp_last_update"
 const val YT_DLP_UPDATE_INTERVAL = "yt-dlp_update_interval"
@@ -120,7 +172,7 @@ private const val INTERVAL_DAY = 86_400_000L
 private const val INTERVAL_WEEK = 86_400_000L * 7
 private const val INTERVAL_MONTH = 86_400_000L * 30
 
-const val DEFAULT_INTERVAL = INTERVAL_WEEK // every week
+const val DEFAULT_INTERVAL = INTERVAL_DAY // every day
 
 val UpdateIntervalList =
     mapOf(
@@ -200,6 +252,11 @@ const val STYLE_FRUIT_SALAD = 2
 const val STYLE_VIBRANT = 3
 const val STYLE_MONOCHROME = 4
 
+// Network Type Restriction Options
+const val NETWORK_ANY = 0
+const val NETWORK_WIFI_ONLY = 1
+const val NETWORK_MOBILE_ONLY = 2
+
 private val StringPreferenceDefaults =
     mapOf(
         SPONSORBLOCK_CATEGORIES to "default",
@@ -218,6 +275,19 @@ private val BooleanPreferenceDefaults =
         NOTIFICATION to true,
         EMBED_METADATA to true,
         USE_CUSTOM_AUDIO_PRESET to false,
+        AUTO_UPDATE to true,
+        NOTIFICATION_SOUND to true,
+        NOTIFICATION_VIBRATE to true,
+        NOTIFICATION_LED to true,
+        NOTIFICATION_SUCCESS_SOUND to true,
+        NOTIFICATION_ERROR_SOUND to true,
+        ONBOARDING_COMPLETED to false,
+        FORMAT_LIST_VIEW to false,
+        FORMAT_MP4_ONLY to true,
+        DOWNLOAD_DOCS to false,
+        USER_AGENT to true,
+        AUTO_RESUME_ON_RECONNECT to true,
+        SHIZUKU_MOVE_ENABLED to false,
     )
 
 private val IntPreferenceDefaults =
@@ -226,7 +296,7 @@ private val IntPreferenceDefaults =
         CONCURRENT to 8,
         LANGUAGE to SYSTEM_DEFAULT,
         PALETTE_STYLE to 0,
-        DARK_THEME_VALUE to DarkThemePreference.FOLLOW_SYSTEM,
+        DARK_THEME_VALUE to DarkThemePreference.ON,
         WELCOME_DIALOG to 1,
         AUDIO_CONVERSION_FORMAT to NOT_SPECIFIED,
         VIDEO_QUALITY to NOT_SPECIFIED,
@@ -235,11 +305,19 @@ private val IntPreferenceDefaults =
         SHOW_SPONSOR_MSG to 0,
         CONVERT_SUBTITLE to NOT_SPECIFIED,
         DOWNLOAD_TYPE_INITIALIZATION to USE_PREVIOUS_SELECTION,
-        YT_DLP_UPDATE_CHANNEL to YT_DLP_NIGHTLY,
+        YT_DLP_UPDATE_CHANNEL to YT_DLP_STABLE,
         DOWNLOAD_TYPE to DownloadType.Video.ordinal,
+        NETWORK_TYPE_RESTRICTION to NETWORK_ANY,
+        NETWORK_PAUSE_DELAY_SECONDS to 25,
+        MAX_CONCURRENT_DOWNLOADS to 1,
+        ARIA2C_CONNECTIONS to 16,
+        SPONSOR_DIALOG_FREQUENCY to SPONSOR_FREQ_WEEKLY,
     )
 
-private val LongPreferenceDefaults = mapOf(YT_DLP_UPDATE_INTERVAL to DEFAULT_INTERVAL)
+private val LongPreferenceDefaults = mapOf(
+    YT_DLP_UPDATE_INTERVAL to DEFAULT_INTERVAL,
+    SPONSOR_DIALOG_LAST_SHOWN to 0L,
+)
 
 fun String.getStringDefault() = StringPreferenceDefaults.getOrElse(this) { "" }
 
@@ -303,8 +381,54 @@ object PreferenceUtil {
 
     fun updateDownloadType(type: DownloadType) = DOWNLOAD_TYPE.updateInt(type.ordinal)
 
-    fun isNetworkAvailableForDownload() =
-        CELLULAR_DOWNLOAD.getBoolean() || !App.connectivityManager.isActiveNetworkMetered
+    fun isNetworkAvailable(): Boolean {
+        val connectivityManager = App.connectivityManager
+        val activeNetwork = connectivityManager.activeNetwork ?: return false
+        val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
+        return capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
+    fun isNetworkAvailableForDownload(): Boolean {
+        // First check if network is available at all
+        if (!isNetworkAvailable()) {
+            return false
+        }
+        
+        val networkRestriction = NETWORK_TYPE_RESTRICTION.getInt()
+        val isMetered = App.connectivityManager.isActiveNetworkMetered
+        
+        return when (networkRestriction) {
+            NETWORK_WIFI_ONLY -> !isMetered  // Only allow WiFi (non-metered)
+            NETWORK_MOBILE_ONLY -> isMetered  // Only allow Mobile (metered)
+            NETWORK_ANY -> true  // Allow any network type (both WiFi and Mobile)
+            else -> CELLULAR_DOWNLOAD.getBoolean() || !isMetered
+        }
+    }
+
+    fun getNetworkPauseDelayMs(): Long {
+        val seconds = NETWORK_PAUSE_DELAY_SECONDS.getInt().coerceIn(5, 120)
+        return seconds.toLong() * 1000L
+    }
+
+    fun getNetworkErrorMessage(): Int {
+        if (!isNetworkAvailable()) {
+            return R.string.network_unavailable
+        }
+        
+        val networkRestriction = NETWORK_TYPE_RESTRICTION.getInt()
+        val isMetered = App.connectivityManager.isActiveNetworkMetered
+        
+        return when (networkRestriction) {
+            NETWORK_WIFI_ONLY -> 
+                if (isMetered) R.string.wifi_only_restriction_message
+                else R.string.network_unavailable
+            NETWORK_MOBILE_ONLY -> 
+                if (!isMetered) R.string.mobile_only_restriction_message
+                else R.string.network_unavailable
+            else -> R.string.cellular_data_warning
+        }
+    }
 
     fun isAutoUpdateEnabled(): Boolean {
         return when {
@@ -350,15 +474,9 @@ object PreferenceUtil {
         get() = find { it.id == TEMPLATE_ID.getInt() }
 
     fun getTemplate(): CommandTemplate {
-        var template: CommandTemplate? = null
-        runBlocking {
-            for (cnt in 1..5) {
-                template = templateListStateFlow.value.selectedTemplate
-                if (template != null) return@runBlocking
-                delay(100)
-            }
-        }
-        return template ?: throw NoSuchElementException()
+        return templateListStateFlow.value.selectedTemplate
+            ?: templateListStateFlow.value.firstOrNull()
+            ?: throw NoSuchElementException("No command template found")
     }
 
     suspend fun initializeTemplateSample() {
@@ -379,6 +497,7 @@ object PreferenceUtil {
         val isDynamicColorEnabled: Boolean = false,
         val seedColor: Int = DEFAULT_SEED_COLOR,
         val paletteStyleIndex: Int = 0,
+        val isGradientDarkModeEnabled: Boolean = false,
     )
 
     fun getMaxDownloadRate(): String = MAX_RATE.getString()
@@ -388,13 +507,14 @@ object PreferenceUtil {
             AppSettings(
                 DarkThemePreference(
                     darkThemeValue =
-                        kv.decodeInt(DARK_THEME_VALUE, DarkThemePreference.FOLLOW_SYSTEM),
+                        kv.decodeInt(DARK_THEME_VALUE, DarkThemePreference.ON),
                     isHighContrastModeEnabled = kv.decodeBool(HIGH_CONTRAST, false),
                 ),
                 isDynamicColorEnabled =
                     kv.decodeBool(DYNAMIC_COLOR, DynamicColors.isDynamicColorAvailable()),
                 seedColor = kv.decodeInt(THEME_COLOR, DEFAULT_SEED_COLOR),
                 paletteStyleIndex = kv.decodeInt(PALETTE_STYLE, 0),
+                isGradientDarkModeEnabled = kv.decodeBool(GRADIENT_DARK_MODE, true),
             )
         )
     val AppSettingsStateFlow = mutableAppSettingsStateFlow.asStateFlow()
@@ -438,6 +558,15 @@ object PreferenceUtil {
         }
     }
 
+    fun switchGradientDarkMode(
+        enabled: Boolean = !mutableAppSettingsStateFlow.value.isGradientDarkModeEnabled
+    ) {
+        applicationScope.launch(Dispatchers.IO) {
+            mutableAppSettingsStateFlow.update { it.copy(isGradientDarkModeEnabled = enabled) }
+            kv.encode(GRADIENT_DARK_MODE, enabled)
+        }
+    }
+
     fun encodeTaskListBackup(map: Map<Task, Task.State>) =
         runCatching { json.encodeToString<Map<Task, Task.State>>(map) }
             .onSuccess { kv.encode(TASK_LIST, it) }
@@ -458,7 +587,7 @@ object PreferenceUtil {
 }
 
 data class DarkThemePreference(
-    val darkThemeValue: Int = FOLLOW_SYSTEM,
+    val darkThemeValue: Int = ON,
     val isHighContrastModeEnabled: Boolean = false,
 ) {
     companion object {

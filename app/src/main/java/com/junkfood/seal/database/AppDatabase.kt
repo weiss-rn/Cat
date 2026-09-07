@@ -7,6 +7,8 @@ import com.junkfood.seal.database.objects.CommandTemplate
 import com.junkfood.seal.database.objects.CookieProfile
 import com.junkfood.seal.database.objects.DownloadedVideoInfo
 import com.junkfood.seal.database.objects.OptionShortcut
+import com.junkfood.seal.database.objects.SavedCommentSet
+import com.junkfood.seal.database.objects.SavedVideoInfo
 
 @Database(
     entities =
@@ -15,8 +17,10 @@ import com.junkfood.seal.database.objects.OptionShortcut
             CommandTemplate::class,
             CookieProfile::class,
             OptionShortcut::class,
+            SavedVideoInfo::class,
+            SavedCommentSet::class,
         ],
-    version = 5,
+    version = 10,
     autoMigrations =
         [
             AutoMigration(from = 1, to = 2),
