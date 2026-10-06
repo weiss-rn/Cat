@@ -3,6 +3,7 @@ package com.junkfood.seal.util
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Environment
+import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import android.util.Log
 import com.junkfood.seal.App
@@ -13,6 +14,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
+import moe.shizuku.server.IShizukuService
 
 /**
  * Opt-in Shizuku-backed file operations. Shizuku does NOT grant this app's process shell
@@ -115,14 +117,14 @@ object ShizukuFileAccess {
                     tempPath.walkTopDown().filter { it.isFile }.toList().ifEmpty {
                         return@runCatching emptyList<String>()
                     }
-                checkMkdirs(destDirPath)
+                checkMkdirs(destDirPath).getOrThrow()
                 files.forEach { file ->
                     val relative = file.relativeTo(tempPath).invariantSeparatorsPath
                     val relativeParent = relative.substringBeforeLast('/', "")
                     val targetDir =
                         if (relativeParent.isEmpty()) destDirPath
                         else "$destDirPath/$relativeParent"
-                    if (relativeParent.isNotEmpty()) checkMkdirs(targetDir)
+                    if (relativeParent.isNotEmpty()) checkMkdirs(targetDir).getOrThrow()
                     val finalName = pickNonCollidingName(targetDir, file.name)
                     val targetPath = "$targetDir/$finalName"
                     moveFile(file.absolutePath, targetPath)
@@ -146,7 +148,7 @@ object ShizukuFileAccess {
 
     suspend fun deletePath(path: String, recursive: Boolean = false): Result<Unit> =
         runShellCommand(
-            "rm ${if (recursive) "-r" else ""} -f -- ${shellEscape(path)}"
+            "rm ${if (recursive) "-r " else ""}-f -- ${shellEscape(path)}"
         ).map {}
 
     /**
@@ -157,29 +159,42 @@ object ShizukuFileAccess {
         execMutex.withLock {
             withContext(Dispatchers.IO) {
                 runCatching {
-                    val process = Shizuku.newProcess(arrayListOf("sh", "-c", command), null, null)
-                    val stdout = process.inputStream.bufferedReader()
-                    val stderr = process.stderr.bufferedReader()
-                    val output =
-                        StringBuilder().also { builder ->
-                            stdout.forEachLine { line ->
-                                builder.appendLine(line)
-                            }
+                    val service = IShizukuService.Stub.asInterface(Shizuku.getBinder())
+                    val remote = service.newProcess(arrayOf("sh", "-c", command), null, null)
+
+                    // Drain stderr concurrently: it can fill the pipe buffer and
+                    // block the process before stdout reaches EOF otherwise.
+                    val stderrText = java.util.concurrent.atomic.AtomicReference("")
+                    val stderrThread =
+                        Thread {
+                            stderrText.set(
+                                ParcelFileDescriptor.AutoCloseInputStream(remote.getErrorStream())
+                                    .bufferedReader()
+                                    .readText()
+                            )
                         }
-                    val finished = process.waitFor(COMMAND_TIMEOUT_MINUTES, TimeUnit.MINUTES)
-                    val errText = stderr.readText()
+                    stderrThread.start()
+                    val stdoutText =
+                        ParcelFileDescriptor.AutoCloseInputStream(remote.getInputStream())
+                            .bufferedReader()
+                            .readText()
+
+                    val finished =
+                        remote.waitForTimeout(COMMAND_TIMEOUT_MINUTES, TimeUnit.MINUTES.name())
+                    stderrThread.join(TimeUnit.SECONDS.toMillis(10))
+                    val errText = stderrText.get()
                     if (!finished) {
-                        process.destroyForcibly()
+                        remote.destroy()
                         error("Shizuku command timed out after ${COMMAND_TIMEOUT_MINUTES}m")
                     }
-                    val exit = process.exitValue()
+                    val exit = remote.exitValue()
                     if (exit != 0) {
                         error(
                             "Shizuku command failed (exit $exit): " +
-                                errText.ifBlank { output.toString() }.trim()
+                                errText.ifBlank { stdoutText }.trim()
                         )
                     }
-                    output.toString().trimEnd('\n')
+                    stdoutText.trimEnd('\n')
                 }.onFailure {
                     Log.w(TAG, "Shizuku shell failed: $command", it)
                 }
@@ -197,7 +212,7 @@ object ShizukuFileAccess {
         var candidate = fileName
         var index = 1
         while (
-            checkExists("$targetDir/$candidate").getOrDefault(false)
+            checkExists("$targetDir/$candidate").getOrThrow()
         ) {
             val dot = fileName.lastIndexOf('.')
             candidate =

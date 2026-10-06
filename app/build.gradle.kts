@@ -191,6 +191,7 @@ dependencies {
 
     implementation(libs.shizuku.api)
     implementation(libs.shizuku.provider)
+    implementation(libs.shizuku.aidl)
 
     testImplementation(libs.junit4)
     androidTestImplementation(libs.androidx.test.ext)

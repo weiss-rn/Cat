@@ -1,8 +1,7 @@
 name: Android CI
 
 on:
-  pull_request:
-    branches: [1006GA]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -19,7 +18,7 @@ jobs:
       - name: Set up JDK
         uses: actions/setup-java@v4
         with:
-          java-version: '17'   # safer default for Android builds
+          java-version: '21'
           distribution: 'temurin'
 
       - name: Setup Android SDK
