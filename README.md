@@ -28,8 +28,9 @@ Some patches are taken from https://github.com/MaheshTechnicals/Sealplus, plus m
 - [ ] Bulk resume / retry + continue after reboot
 - [ ] Scheduling + duplicate check
 - [ ] History search + queue ETA + format memory
-- [ ] Bumping Youtubedl-android to latest yt-dlp binary including latest ffmpeg (Problematic to do)
-
+- [x] Upgrade default yt-dlp binary from 2025.11.12 to 2026.08.19
+- [ ] Upgrade ffmpeg jniLibs to the latest existing Termux build (7.1.1 → 8.1.2)
+wa
 ## License
 
 See [LICENSE](./LICENSE).

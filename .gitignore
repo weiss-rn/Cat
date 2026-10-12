@@ -17,3 +17,6 @@ hs_err_pid*
 /local.properties
 local.properties
 /keystore.properties
+
+# Local-only notes (never commit)
+/YTDLP_BINARY.md
