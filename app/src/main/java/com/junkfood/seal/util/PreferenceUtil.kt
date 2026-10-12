@@ -381,7 +381,33 @@ object PreferenceUtil {
 
     fun updateDownloadType(type: DownloadType) = DOWNLOAD_TYPE.updateInt(type.ordinal)
 
+    /**
+     * True when there is an active network capable of carrying traffic.
+     *
+     * Deliberately checks only NET_CAPABILITY_INTERNET and NOT NET_CAPABILITY_VALIDATED.
+     * VALIDATED only flips to true once Android's captive-portal probe has succeeded, which
+     * stays false on plenty of networks that work perfectly well: guest or enterprise Wi-Fi
+     * that blocks the probe host, DNS filtering, a misconfigured IPv6 path, or some VPNs.
+     * Treating that as "offline" is what made the yt-dlp updater quietly skip itself while
+     * the user was plainly online.
+     *
+     * Use this for background app-level network calls. Use [isNetworkAvailableValidated] when
+     * a network known to actually reach the internet is required, and
+     * [isNetworkAvailableForDownload] when the user download restrictions also apply.
+     */
     fun isNetworkAvailable(): Boolean {
+        val connectivityManager = App.connectivityManager
+        val activeNetwork = connectivityManager.activeNetwork ?: return false
+        val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
+        return capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    /**
+     * Stricter variant of [isNetworkAvailable] that additionally requires the network to have
+     * been probed successfully. Appropriate for user-initiated downloads, where quietly
+     * stalling on an unvalidated network is the correct behaviour.
+     */
+    fun isNetworkAvailableValidated(): Boolean {
         val connectivityManager = App.connectivityManager
         val activeNetwork = connectivityManager.activeNetwork ?: return false
         val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
@@ -390,8 +416,9 @@ object PreferenceUtil {
     }
 
     fun isNetworkAvailableForDownload(): Boolean {
-        // First check if network is available at all
-        if (!isNetworkAvailable()) {
+        // Downloads stay on the strict, probed-network check: stalling a user download on an
+        // unvalidated network is correct, whereas skipping a background update on one is not.
+        if (!isNetworkAvailableValidated()) {
             return false
         }
         
@@ -412,7 +439,7 @@ object PreferenceUtil {
     }
 
     fun getNetworkErrorMessage(): Int {
-        if (!isNetworkAvailable()) {
+        if (!isNetworkAvailableValidated()) {
             return R.string.network_unavailable
         }
         

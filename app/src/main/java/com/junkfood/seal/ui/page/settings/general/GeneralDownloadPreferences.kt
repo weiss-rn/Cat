@@ -208,8 +208,9 @@ fun GeneralDownloadPreferences(onNavigateBack: () -> Unit, navigateToTemplate: (
                                     }
                                     .onFailure { th ->
                                         th.printStackTrace()
+                                        val error = UpdateUtil.classifyYtdlpUpdateError(th)
                                         ToastUtil.makeToastSuspend(
-                                            App.context.getString(R.string.yt_dlp_update_fail)
+                                            UpdateUtil.describeYtdlpUpdateError(context, error)
                                         )
                                     }
                                     .onSuccess {

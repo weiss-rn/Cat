@@ -13,7 +13,9 @@
     <string name="extract_audio_summary">Download and save audio, instead of video</string>
     <string name="create_thumbnail_summary">Save video thumbnail as a file</string>
     <string name="yt_dlp_up_to_date">Using the latest version of yt-dlp</string>
-    <string name="yt_dlp_update_fail">Could not install the latest yt-dlp version. Please make sure you are connected to the Internet.</string>
+    <string name="yt_dlp_update_fail">Could not install the latest yt-dlp version: %1$s</string>
+    <string name="yt_dlp_update_fail_offline">No network connection</string>
+    <string name="yt_dlp_update_rate_limited">GitHub rate limit reached, try again later</string>
     <string name="fetching_info">Fetching video info…</string>
     <string name="permission_denied">Permission denied</string>
     <string name="download_success_msg">Download finished</string>

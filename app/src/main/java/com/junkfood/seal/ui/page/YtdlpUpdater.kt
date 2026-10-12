@@ -28,7 +28,11 @@ fun YtdlpUpdater() {
         if (!YT_DLP_AUTO_UPDATE.getBoolean() && YT_DLP_VERSION.getString().isNotEmpty())
             return@LaunchedEffect
 
-        if (!PreferenceUtil.isNetworkAvailableForDownload()) {
+        // An update check is not a user download. Gating it on isNetworkAvailableForDownload()
+// applied the Wi-Fi-only / cellular restrictions here, so yt-dlp never auto-updated on a
+// metered connection. isNetworkAvailable() only asks whether there is an active network,
+// and deliberately does not require NET_CAPABILITY_VALIDATED.
+        if (!PreferenceUtil.isNetworkAvailable()) {
             return@LaunchedEffect
         }
 

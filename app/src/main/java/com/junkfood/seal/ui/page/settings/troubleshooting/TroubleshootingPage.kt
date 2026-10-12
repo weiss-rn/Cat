@@ -129,9 +129,10 @@ fun TroubleShootingPage(
                                 }
                                 .onFailure { th ->
                                     th.printStackTrace()
+                                    val error = UpdateUtil.classifyYtdlpUpdateError(th)
                                     withContext(Dispatchers.Main) {
                                         context.makeToast(
-                                            App.context.getString(R.string.yt_dlp_update_fail)
+                                            UpdateUtil.describeYtdlpUpdateError(context, error)
                                         )
                                     }
                                 }

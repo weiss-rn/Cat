@@ -74,6 +74,74 @@ object UpdateUtil {
                 }
         }
 
+    /** Why a yt-dlp update attempt failed, so callers can report something true. */
+    sealed interface YtdlpUpdateError {
+
+        /** No usable network at all. */
+        data object Offline : YtdlpUpdateError
+
+        /**
+         * GitHub refused the request because the unauthenticated API rate limit is exhausted.
+         * Unauthenticated api.github.com allows 60 requests per hour per IP, shared by every
+         * device behind the same router or carrier, so this is routinely mistaken for the user
+         * being offline.
+         */
+        data object RateLimited : YtdlpUpdateError
+
+        /** Anything else - a TLS, DNS or parse failure. Carries the underlying detail. */
+        data class Other(val detail: String) : YtdlpUpdateError
+    }
+
+    /**
+     * Lower-cased text of [throwable] and every nested cause.
+     *
+     * [YoutubeDL.updateYoutubeDL] performs its own HTTP and surfaces every failure mode as a
+     * plain exception, so there is no typed HTTP error to switch on. Walking the cause chain
+     * catches detail that the library wraps.
+     */
+    private fun throwableMessages(throwable: Throwable): List<String> {
+        val messages = mutableListOf<String>()
+        var current: Throwable? = throwable
+        while (current != null) {
+            current.message?.lowercase()?.let { messages.add(it) }
+            current = current.cause
+        }
+        return messages
+    }
+
+    private val rateLimitMarkers =
+        listOf("rate limit", "ratelimit", "abuse detection", "403", "429")
+
+    /**
+     * Classifies a failure from [updateYtDlp] so callers stop reporting every possible error
+     * as "you are offline".
+     */
+    fun classifyYtdlpUpdateError(throwable: Throwable): YtdlpUpdateError {
+        if (!PreferenceUtil.isNetworkAvailable()) {
+            return YtdlpUpdateError.Offline
+        }
+        val messages = throwableMessages(throwable)
+        val rateLimited = messages.any { message ->
+            rateLimitMarkers.any { marker -> message.contains(marker) }
+        }
+        return if (rateLimited) {
+            YtdlpUpdateError.RateLimited
+        } else {
+            YtdlpUpdateError.Other(
+                throwable.message?.takeIf { it.isNotBlank() }
+                    ?: throwable::class.java.simpleName
+            )
+        }
+    }
+
+    /** Human-readable summary of a failed [updateYtDlp], safe to show in a toast. */
+    fun describeYtdlpUpdateError(context: Context, error: YtdlpUpdateError): String =
+        when (error) {
+            is YtdlpUpdateError.Offline -> context.getString(R.string.yt_dlp_update_fail_offline)
+            is YtdlpUpdateError.RateLimited -> context.getString(R.string.yt_dlp_update_rate_limited)
+            is YtdlpUpdateError.Other -> context.getString(R.string.yt_dlp_update_fail, error.detail)
+        }
+
     private fun getLatestRelease(): Release =
         client.newCall(requestForReleases).execute().body.use {
             val releaseList = jsonFormat.decodeFromString<List<Release>>(it.string())

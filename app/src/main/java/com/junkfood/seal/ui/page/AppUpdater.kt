@@ -60,9 +60,9 @@ fun AppUpdater() {
         }
 
     LaunchedEffect(Unit) {
-        if (
-            !PreferenceUtil.isNetworkAvailableForDownload() || !PreferenceUtil.isAutoUpdateEnabled()
-        )
+        // Same reasoning as YtdlpUpdater: an app self-update is not a user download, so it should
+// not be gated by the Wi-Fi-only / cellular restrictions.
+if (!PreferenceUtil.isNetworkAvailable() || !PreferenceUtil.isAutoUpdateEnabled())
             return@LaunchedEffect
         withContext(Dispatchers.IO) {
             runCatching {
