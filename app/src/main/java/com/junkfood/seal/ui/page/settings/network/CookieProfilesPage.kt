@@ -90,7 +90,8 @@ import com.junkfood.seal.ui.theme.SealTheme
 import com.junkfood.seal.ui.theme.generateLabelColor
 import com.junkfood.seal.util.COOKIES
 import com.junkfood.seal.util.DownloadUtil
-import com.junkfood.seal.util.DownloadUtil.toCookiesFileContent
+import com.junkfood.seal.util.CookieUtil
+import com.junkfood.seal.util.CookieUtil.toCookiesFileContent
 import com.junkfood.seal.util.FileUtil
 import com.junkfood.seal.util.FileUtil.getCookiesFile
 import com.junkfood.seal.util.PreferenceUtil.getBoolean
@@ -134,7 +135,7 @@ fun CookieProfilePage(
 
     DisposableEffect(shouldUpdateCookies) {
         scope.launch(Dispatchers.IO) {
-            DownloadUtil.getCookieListFromDatabase().getOrNull()?.let {
+            CookieUtil.getCookieListFromDatabase().getOrNull()?.let {
                 cookieList = it
                 FileUtil.writeContentToFile(it.toCookiesFileContent(), context.getCookiesFile())
             }

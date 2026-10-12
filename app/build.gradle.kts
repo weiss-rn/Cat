@@ -14,6 +14,8 @@ plugins {
     alias(libs.plugins.ktfmt.gradle)
 }
 
+kotlin { jvmToolchain(21) }
+
 val keystorePropertiesFile: File = rootProject.file("keystore.properties")
 
 val splitApks = !project.hasProperty("noSplits")
@@ -147,6 +149,8 @@ android {
 
     packaging {
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+        // Preferred over android:extractNativeLibs in the manifest (AGP >= 4.2);
+        // the manifest attribute has been removed to silence the merge warning.
         jniLibs.useLegacyPackaging = true
     }
     androidResources { generateLocaleConfig = true }
@@ -155,8 +159,6 @@ android {
 }
 
 ktfmt { kotlinLangStyle() }
-
-kotlin { jvmToolchain(21) }
 
 dependencies {
     implementation(project(":color"))

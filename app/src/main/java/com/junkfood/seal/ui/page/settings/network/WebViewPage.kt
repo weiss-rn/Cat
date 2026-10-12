@@ -41,6 +41,7 @@ data class Cookie(
     val path: String = "/",
     val secure: Boolean = true,
     val expiry: Long = 0L,
+    val isHttpOnly: Boolean = false,
 ) {
     constructor(
         url: String,
@@ -50,7 +51,7 @@ data class Cookie(
 
     fun toNetscapeCookieString(): String {
         return connectWithDelimiter(
-            domain,
+            if (isHttpOnly) "#HttpOnly_$" else domain,
             includeSubdomains.toString().uppercase(),
             path,
             secure.toString().uppercase(),

@@ -4,6 +4,10 @@ plugins {
     alias(libs.plugins.compose.compiler)
 }
 
+// Note: the Kotlin plugin version is declared once in the root project (apply false)
+// so it is not repeated here, avoiding the "Kotlin Gradle plugin loaded multiple
+// times" warning across subprojects.
+
 java {
     sourceCompatibility = JavaVersion.VERSION_1_8
     targetCompatibility = JavaVersion.VERSION_1_8

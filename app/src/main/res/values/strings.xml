@@ -212,6 +212,10 @@
     <string name="shizuku_status_not_installed">Shizuku app is not installed — get it from GitHub or your app store, start it, then return here</string>
     <string name="shizuku_hint_start_shizuku">Install and start the Shizuku app first, then come back here to grant permission</string>
     <string name="download_disabled_with_cellular">Downloading with cellular network is disabled according to your settings</string>
+    <string name="network_unavailable">Network unavailable</string>
+    <string name="wifi_only_restriction_message">Waiting for Wi-Fi because downloads are restricted to Wi-Fi</string>
+    <string name="mobile_only_restriction_message">Waiting for mobile data because downloads are restricted to mobile networks</string>
+    <string name="cellular_data_warning">Downloads are paused to avoid cellular data usage</string>
     <string name="file_unavailable">This file is no longer available</string>
     <string name="network">Network</string>
     <string name="rate_limit">Rate limit</string>

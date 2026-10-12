@@ -24,6 +24,7 @@ import com.junkfood.seal.ui.page.settings.network.CookiesViewModel
 import com.junkfood.seal.ui.page.videolist.VideoListViewModel
 import com.junkfood.seal.util.AUDIO_DIRECTORY
 import com.junkfood.seal.util.COMMAND_DIRECTORY
+import com.junkfood.seal.util.CookieUtil
 import com.junkfood.seal.util.DownloadUtil
 import com.junkfood.seal.util.FileUtil
 import com.junkfood.seal.util.FileUtil.createEmptyFile
@@ -91,7 +92,7 @@ class App : Application() {
                 YoutubeDL.init(this@App)
                 FFmpeg.init(this@App)
                 Aria2c.init(this@App)
-                DownloadUtil.getCookiesContentFromDatabase().getOrNull()?.let {
+                CookieUtil.getCookiesContentFromDatabase().getOrNull()?.let {
                     FileUtil.writeContentToFile(it, getCookiesFile())
                 }
                 UpdateUtil.deleteOutdatedApk()

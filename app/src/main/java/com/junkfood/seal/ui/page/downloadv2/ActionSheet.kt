@@ -59,6 +59,7 @@ import com.junkfood.seal.download.Task.DownloadState.Completed
 import com.junkfood.seal.download.Task.DownloadState.Error
 import com.junkfood.seal.download.Task.DownloadState.FetchingInfo
 import com.junkfood.seal.download.Task.DownloadState.Idle
+import com.junkfood.seal.download.Task.DownloadState.Paused
 import com.junkfood.seal.download.Task.DownloadState.ReadyWithInfo
 import com.junkfood.seal.download.Task.DownloadState.Running
 import com.junkfood.seal.ui.common.LocalFixedColorRoles
@@ -280,7 +281,8 @@ fun LazyListScope.ActionButtons(
     onActionPost: (Task, UiAction) -> Unit,
 ) {
     when (downloadState) {
-        is Canceled -> {
+        is Canceled,
+        is Paused -> {
             item(key = "ResumeButton") {
                 ResumeButton(modifier = Modifier.animateItem()) {
                     onActionPost(task, UiAction.Resume)

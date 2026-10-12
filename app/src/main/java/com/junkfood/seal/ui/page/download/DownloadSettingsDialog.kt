@@ -83,6 +83,7 @@ import com.junkfood.seal.util.COOKIES
 import com.junkfood.seal.util.CUSTOM_COMMAND
 import com.junkfood.seal.util.DOWNLOAD_TYPE_INITIALIZATION
 import com.junkfood.seal.util.DatabaseUtil
+import com.junkfood.seal.util.CookieUtil
 import com.junkfood.seal.util.DownloadUtil
 import com.junkfood.seal.util.DownloadUtil.toFormatSorter
 import com.junkfood.seal.util.EXTRACT_AUDIO
@@ -228,7 +229,7 @@ fun DownloadSettingDialog(
 
     LaunchedEffect(showCookiesDialog) {
         withContext(Dispatchers.IO) {
-            DownloadUtil.getCookiesContentFromDatabase().getOrNull()?.let {
+            CookieUtil.getCookiesContentFromDatabase().getOrNull()?.let {
                 FileUtil.writeContentToFile(it, context.getCookiesFile())
             }
         }

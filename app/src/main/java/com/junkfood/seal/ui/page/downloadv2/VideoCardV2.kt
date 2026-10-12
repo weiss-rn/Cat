@@ -66,6 +66,7 @@ import com.junkfood.seal.download.Task.DownloadState.Completed
 import com.junkfood.seal.download.Task.DownloadState.Error
 import com.junkfood.seal.download.Task.DownloadState.FetchingInfo
 import com.junkfood.seal.download.Task.DownloadState.Idle
+import com.junkfood.seal.download.Task.DownloadState.Paused
 import com.junkfood.seal.download.Task.DownloadState.ReadyWithInfo
 import com.junkfood.seal.download.Task.DownloadState.Running
 import com.junkfood.seal.download.Task.RestartableAction
@@ -410,6 +411,7 @@ fun ListItemStateText(
     ) { downloadState ->
         val text =
             when (downloadState) {
+                is Paused -> stringResource(R.string.status_paused)
                 is Canceled -> stringResource(R.string.status_canceled)
                 is Completed -> stringResource(R.string.status_downloaded)
                 is Error -> stringResource(R.string.status_error)
@@ -427,6 +429,14 @@ fun ListItemStateText(
             }
         Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
             when (downloadState) {
+                is Paused -> {
+                    Icon(
+                        imageVector = Icons.Rounded.Pause,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = sizeModifier,
+                    )
+                }
                 is Canceled -> {
                     Icon(
                         imageVector = Icons.Outlined.Cancel,
@@ -490,6 +500,7 @@ private fun CardItemStateText(modifier: Modifier = Modifier, downloadState: Task
 
     val text =
         when (downloadState) {
+            is Paused -> R.string.status_paused
             is Canceled -> R.string.status_canceled
             is Completed -> R.string.status_downloaded
             is Error -> R.string.status_error
@@ -527,6 +538,10 @@ fun ActionButton(
         is Error -> {
             RestartButton(modifier = modifier) { onActionPost(UiAction.Resume) }
         }
+        is Paused ->
+            ResumeButton(modifier = modifier, progress = downloadState.progress) {
+                onActionPost(UiAction.Resume)
+            }
         is Canceled -> {
             ResumeButton(modifier = modifier, downloadState.progress) {
                 onActionPost(UiAction.Resume)

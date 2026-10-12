@@ -162,9 +162,18 @@ object ShizukuFileAccess {
                     val service = IShizukuService.Stub.asInterface(Shizuku.getBinder())
                     val remote = service.newProcess(arrayOf("sh", "-c", command), null, null)
 
-                    // Drain stderr concurrently: it can fill the pipe buffer and
-                    // block the process before stdout reaches EOF otherwise.
+                    // Both pipe will dran concurrently while waiting either the pipe could fill and block
+                    // the process and reading stdout on this following threat will hit a timeout on the moot
                     val stderrText = java.util.concurrent.atomic.AtomicReference("")
+                    val stdoutText = java.util.concurrent.atomic.AtomicReference("")
+                    val stdoutThread =
+                        Thread {
+                            stdoutText.set(
+                                ParcelFileDescriptor.AutoCloseInputStream(remote.getInputStream())
+                                    .bufferedReader()
+                                    .readText()
+                            )
+                        }
                     val stderrThread =
                         Thread {
                             stderrText.set(
@@ -173,28 +182,27 @@ object ShizukuFileAccess {
                                     .readText()
                             )
                         }
-                    stderrThread.start()
-                    val stdoutText =
-                        ParcelFileDescriptor.AutoCloseInputStream(remote.getInputStream())
-                            .bufferedReader()
-                            .readText()
+                    stdoutThread.start()
+                    stderrThread.start() 
 
                     val finished =
-                        remote.waitForTimeout(COMMAND_TIMEOUT_MINUTES, TimeUnit.MINUTES.name())
+                        remote.waitForTimeout(COMMAND_TIMEOUT_MINUTES, TimeUnit.MINUTES.name)
+                    if (!finished) remote.destroy()
+                    stdoutThread.join(TimeUnit.SECONDS.toMillis(10))
                     stderrThread.join(TimeUnit.SECONDS.toMillis(10))
+                    val outText = stdoutText.get()
                     val errText = stderrText.get()
                     if (!finished) {
-                        remote.destroy()
                         error("Shizuku command timed out after ${COMMAND_TIMEOUT_MINUTES}m")
                     }
                     val exit = remote.exitValue()
                     if (exit != 0) {
                         error(
                             "Shizuku command failed (exit $exit): " +
-                                errText.ifBlank { stdoutText }.trim()
+                                errText.ifBlank { outText }.trim()
                         )
                     }
-                    stdoutText.trimEnd('\n')
+                    outText.trimEnd('\n')
                 }.onFailure {
                     Log.w(TAG, "Shizuku shell failed: $command", it)
                 }

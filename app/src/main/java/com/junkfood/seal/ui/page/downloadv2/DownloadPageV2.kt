@@ -96,6 +96,7 @@ import com.junkfood.seal.download.Task.DownloadState.Completed
 import com.junkfood.seal.download.Task.DownloadState.Error
 import com.junkfood.seal.download.Task.DownloadState.FetchingInfo
 import com.junkfood.seal.download.Task.DownloadState.Idle
+import com.junkfood.seal.download.Task.DownloadState.Paused
 import com.junkfood.seal.download.Task.DownloadState.ReadyWithInfo
 import com.junkfood.seal.download.Task.DownloadState.Running
 import com.junkfood.seal.ui.common.HapticFeedback.slightHapticFeedback
@@ -753,6 +754,7 @@ internal class DownloadPageV2Test {
                             map.toMap().map { (task, state) ->
                                 val newDownloadState =
                                     when (state.downloadState) {
+                                        is Paused -> Idle
                                         is Canceled -> Idle
                                         is Completed -> Idle
                                         is Error -> Idle
@@ -782,6 +784,14 @@ internal class DownloadPageV2Test {
             }
 
             override fun cancel(task: Task): Boolean {
+                return false
+            }
+
+            override fun pause(task: Task): Boolean {
+                return false
+            }
+
+            override fun resume(task: Task): Boolean {
                 return false
             }
 

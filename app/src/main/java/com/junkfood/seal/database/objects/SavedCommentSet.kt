@@ -6,6 +6,8 @@ import androidx.room.Ignore
 import androidx.room.PrimaryKey
 import com.junkfood.seal.util.Comment
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 /**
@@ -36,6 +38,6 @@ data class SavedCommentSet(
 
     companion object {
         fun encodeComments(comments: List<Comment>): String =
-            runCatching { Json.encodeToString(comments) }.getOrDefault("[]")
+            runCatching { Json.encodeToString<List<Comment>>(comments) }.getOrDefault("[]")
     }
 }
