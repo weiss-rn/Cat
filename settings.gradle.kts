@@ -16,7 +16,7 @@ dependencyResolutionManagement {
         mavenLocal()
     }
 }
-rootProject.name = "Seal"
+rootProject.name = "Cat"
 include (":app")
 include(":color")
 include(":ffmpeg")
