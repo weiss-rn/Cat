@@ -121,6 +121,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
+import java.io.File
 
 private const val ytdlpOutputTemplateReference = "https://github.com/yt-dlp/yt-dlp#output-template"
 private val PublicDownloadsDirectory =
@@ -131,6 +132,64 @@ private const val ytdlpFilesystemReference = "https://github.com/yt-dlp/yt-dlp#f
 
 private fun String.isValidDirectory(): Boolean {
     return isEmpty() || contains(PublicDownloadsDirectory) || contains(PublicDocumentDirectory)
+}
+
+/** Folders Android hides from the system picker and blocks normal writes to. */
+private val restrictedSegments = listOf("/Android/data", "/Android/obb")
+
+/**
+ * True when [path] sits inside a restricted folder. Compared per segment so that a folder merely
+ * *named* "data" — such as `/storage/emulated/0/Documents/data` — is not mistaken for the real one.
+ */
+private fun isRestrictedPath(path: String): Boolean {
+    val normalized = path.replace('\\', '/').trimEnd('/')
+    return restrictedSegments.any { normalized.contains(it, ignoreCase = true) }
+}
+
+/** Outcome of checking a typed-in path before it is committed to preferences. */
+private sealed interface PathCheck {
+    /** Empty or only whitespace - nothing to validate. */
+    data object Blank : PathCheck
+
+    /** Path can be used as-is. */
+    data object Ok : PathCheck
+
+    /** Restricted folder, but Shizuku is enabled and granted, so the move will succeed. */
+    data object OkViaShizuku : PathCheck
+
+    /** Restricted folder with no Shizuku fallback - the download would fail on move. */
+    data object BlockedRestricted : PathCheck
+
+    /** Path does not exist, or exists but is not a writable directory. */
+    data object NotWritable : PathCheck
+}
+
+/**
+ * Validates a typed path the way the download flow will actually use it.
+ *
+ * Restricted folders are only reachable through the Shizuku move, so they are reported as usable
+ * solely when that fast path is genuinely available - permission alone is not enough, since the
+ * toggle also has to be on. Everything else is checked with plain file permissions, which is what
+ * the SAF fallback will be limited to.
+ */
+private suspend fun checkPath(path: String): PathCheck {
+    if (path.isBlank()) return PathCheck.Blank
+
+    if (isRestrictedPath(path)) {
+        val shizukuReady =
+            SHIZUKU_MOVE_ENABLED.getBoolean() && ShizukuFileAccess.isReadyForFileOps()
+        return if (shizukuReady) PathCheck.OkViaShizuku else PathCheck.BlockedRestricted
+    }
+
+    val dir = File(path)
+    // A directory that does not exist yet is fine as long as its parent is writable, because the
+    // mover creates it. Only fail when no ancestor could ever be written to.
+    val probe = if (dir.isDirectory) dir else dir.parentFile
+    return when {
+        probe == null -> PathCheck.NotWritable
+        probe.isDirectory && probe.canWrite() -> PathCheck.Ok
+        else -> PathCheck.NotWritable
+    }
 }
 
 enum class Directory {
@@ -196,6 +255,8 @@ fun DownloadDirectoryPreferences(onNavigateBack: () -> Unit) {
     val isCustomCommandEnabled by remember { mutableStateOf(CUSTOM_COMMAND.getBoolean()) }
 
     var showOutputTemplateDialog by remember { mutableStateOf(false) }
+    var pathCheck by remember { mutableStateOf<PathCheck>(PathCheck.Blank) }
+    var pathCheckInFlight by remember { mutableStateOf(false) }
 
     val storagePermission =
         rememberPermissionState(permission = Manifest.permission.WRITE_EXTERNAL_STORAGE)
@@ -326,6 +387,8 @@ fun DownloadDirectoryPreferences(onNavigateBack: () -> Unit) {
                         },
                     icon = Icons.Outlined.Folder,
                 ) {
+                    pathCheck = PathCheck.Blank
+                    pathCheckInFlight = false
                     showCustomCommandDirectoryDialog = true
                 }
             }
@@ -517,7 +580,11 @@ fun DownloadDirectoryPreferences(onNavigateBack: () -> Unit) {
                 )
             },
             confirmButton = {
-                ConfirmButton {
+                ConfirmButton(
+                    // Only an affirmative check may commit. Staying disabled while the probe is in
+                    // flight avoids accepting a path that has not been validated yet.
+                    enabled = pathCheck == PathCheck.Ok || pathCheck == PathCheck.OkViaShizuku
+                ) {
                     COMMAND_DIRECTORY.updateString(customCommandDirectory)
                     showCustomCommandDirectoryDialog = false
                 }
@@ -532,10 +599,57 @@ fun DownloadDirectoryPreferences(onNavigateBack: () -> Unit) {
                     OutlinedTextField(
                         modifier = Modifier.padding(vertical = 8.dp),
                         value = customCommandDirectory,
-                        onValueChange = { customCommandDirectory = it },
+                        onValueChange = { newPath ->
+                            customCommandDirectory = newPath
+                            // Re-check off the main thread; file probes touch the disk and
+                            // restricted paths may need a Shizuku round trip. A stale result from
+                            // a previous keystroke must never enable confirm, so clear it first.
+                            pathCheck = PathCheck.Blank
+                            pathCheckInFlight = true
+                            scope.launch {
+                                val result = withContext(Dispatchers.IO) { checkPath(newPath) }
+                                pathCheck = result
+                                pathCheckInFlight = false
+                            }
+                        },
                         leadingIcon = { Text(text = "-P", fontFamily = FontFamily.Monospace) },
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                     )
+                    val (statusText, isError) =
+                        when (val check = pathCheck) {
+                            PathCheck.Blank ->
+                                stringResource(R.string.path_entry_desc) to false
+
+                            PathCheck.Ok -> stringResource(R.string.path_entry_valid) to false
+                            PathCheck.OkViaShizuku ->
+                                stringResource(R.string.path_entry_valid) to false
+
+                            PathCheck.BlockedRestricted ->
+                                stringResource(R.string.path_entry_sensitive_blocked) to true
+
+                            PathCheck.NotWritable ->
+                                stringResource(R.string.path_entry_invalid) to true
+                        }
+                    if (!pathCheckInFlight) {
+                        Text(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                            text = statusText,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color =
+                                if (isError) MaterialTheme.colorScheme.error
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (isRestrictedPath(customCommandDirectory) &&
+                        !SHIZUKU_MOVE_ENABLED.getBoolean()
+                    ) {
+                        Text(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                            text = stringResource(R.string.path_entry_sensitive_warning),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                     Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
                         OutlinedButtonChip(
                             modifier = Modifier.padding(end = 8.dp),

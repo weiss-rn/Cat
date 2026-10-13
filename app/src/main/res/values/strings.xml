@@ -350,6 +350,11 @@
     <string name="disabled">Disabled</string>
     <string name="folder_picker">Folder picker</string>
     <string name="custom_command_directory_desc">Specify the output directory when using custom commands</string>
+    <string name="path_entry_desc">Type the path directly. Use this for folders the system picker hides, such as Android/data.</string>
+    <string name="path_entry_sensitive_warning">This path is inside a restricted folder. Downloads can only be saved here when Shizuku is enabled and granted permission.</string>
+    <string name="path_entry_sensitive_blocked">Cannot save here: the path is inside a restricted folder and Shizuku is not enabled. Enable Shizuku first.</string>
+    <string name="path_entry_invalid">Cannot save here: the parent folder does not exist or is not writable.</string>
+    <string name="path_entry_valid">Folder is available.</string>
     <string name="prefer_compatibility_desc">Prefer MP4(H.264) formats for sharing to other apps</string>
     <string name="prefer_quality_desc">Prefer AV1, VP9 or H.265 formats for watching in compatible apps</string>
     <string name="download_type">Download type</string>
