@@ -20,3 +20,5 @@ local.properties
 
 # Local-only notes (never commit)
 /YTDLP_BINARY.md
+ffmpeg
+.github/workflows/android_ga_ci.yml
