@@ -29,7 +29,7 @@ Some patches are taken from https://github.com/MaheshTechnicals/Sealplus, plus m
 - [ ] Scheduling + duplicate check
 - [ ] History search + queue ETA + format memory
 - [x] Upgrade default yt-dlp binary from 2025.11.12 to 2026.08.19
-- [x] Upgrade ffmpeg jniLibs to the latest existing Termux build (7.1.1 → 8.1.3) (needs on-device check)
+- [x] Upgrade ffmpeg jniLibs to the latest existing Termux build (7.1.1 → 8.1.3)
 
 ## License
 
