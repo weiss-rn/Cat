@@ -21,14 +21,15 @@ import com.junkfood.seal.database.objects.DownloadedVideoInfo
 import com.junkfood.seal.util.CookieUtil.enableCookies
 import com.junkfood.seal.util.FileUtil.getArchiveFile
 import com.junkfood.seal.util.FileUtil.getConfigFile
-import com.junkfood.seal.util.FileUtil.getExternalTempDir
 import com.junkfood.seal.util.FileUtil.getFileName
+import com.junkfood.seal.util.FileUtil.getPrivateTempDir
 import com.junkfood.seal.util.FileUtil.getSdcardTempDir
 import com.junkfood.seal.util.FileUtil.moveFilesToSdcard
 import com.junkfood.seal.util.PreferenceUtil.getBoolean
 import com.junkfood.seal.util.PreferenceUtil.getInt
 import com.junkfood.seal.util.PreferenceUtil.getString
 import com.junkfood.seal.util.PreferenceUtil.updateBoolean
+import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLException
 import com.yausername.youtubedl_android.YoutubeDLRequest
@@ -80,7 +81,7 @@ object DownloadUtil {
             App.applicationScope.launch(Dispatchers.Main) {
                 context.makeToast(R.string.fetching_playlist_info)
             }
-            val request = YoutubeDLRequest(playlistURL)
+            val request = YoutubeDLRequest(playlistURL).useBundledFfmpeg()
             with(request) {
                 //            addOption("--compat-options", "no-youtube-unavailable-videos")
                 addOption("--flat-playlist")
@@ -139,7 +140,7 @@ object DownloadUtil {
     ): Result<VideoInfo> {
         with(preferences) {
             val request =
-                YoutubeDLRequest(url).apply {
+                YoutubeDLRequest(url).useBundledFfmpeg().apply {
                     addOption("-o", BASENAME)
                     if (restrictFilenames) {
                         addOption("--restrict-filenames")
@@ -199,7 +200,7 @@ object DownloadUtil {
         maxComments: Int = 500,
         sortByTop: Boolean = true,
     ): Result<VideoInfo> {
-        val request = YoutubeDLRequest(url).apply {
+        val request = YoutubeDLRequest(url).useBundledFfmpeg().apply {
             addOption("--skip-download")
             addOption("--write-comments")
             addOption("--dump-single-json")
@@ -393,6 +394,26 @@ object DownloadUtil {
         }
     }
 
+
+    /**
+     * Points yt-dlp at the bundled ffmpeg executable.
+     *
+     * Without this yt-dlp searches PATH, finds nothing on Android, and aborts any request that
+     * shells out to ffmpeg with:
+     *     ERROR: Preprocessing: ffmpeg not found. Please install or provide the path using
+     *     --ffmpeg-location
+     *
+     * The app ships ffmpeg as `libffmpeg.so` / `libffprobe.so` inside the APK's native library
+     * directory, with the shared-library closure unzipped separately, so the binaries are only
+     * reachable by absolute path. A directory cannot be passed instead: yt-dlp would look for
+     * files named exactly `ffmpeg` and `ffprobe`, which the Android packager forbids.
+     *
+     * Applied to every request rather than only merging downloads, because the same lookup happens
+     * on info probes too. yt-dlp keeps the last occurrence when the flag repeats, so this also
+     * overrides any value the underlying library may supply.
+     */
+    private fun YoutubeDLRequest.useBundledFfmpeg(): YoutubeDLRequest =
+        this.addOption("--ffmpeg-location", FFmpeg.binaryPath(context).absolutePath)
 
     private fun YoutubeDLRequest.useDownloadArchive(): YoutubeDLRequest =
         this.addOption("--download-archive", context.getArchiveFile().absolutePath)
@@ -758,7 +779,7 @@ object DownloadUtil {
                             Throwable(context.getString(R.string.fetch_info_error_msg))
                         )
                 }
-            val request = YoutubeDLRequest(url)
+            val request = YoutubeDLRequest(url).useBundledFfmpeg()
             val pathBuilder = StringBuilder()
             val outputBuilder = StringBuilder()
             // Index 0 = start time ms, index 1 = end time ms
@@ -870,7 +891,20 @@ object DownloadUtil {
                         addCommands(listOf("--replace-in-metadata", "title", ".+", newTitle))
                     }
                     if (Build.VERSION.SDK_INT > 23 && !sdcard) {
-                        addOption("-P", "temp:" + getExternalTempDir(videoInfo.id))
+                        // --paths, NOT -P. A bare `-P temp:<dir>` is a relative override that
+                        // yt-dlp only honours when the directory sits inside the current output
+                        // directory, so it can be silently ignored.
+                        //
+                        // The directory is private and per-video, which is the actual fix. yt-dlp
+                        // confirms a thumbnail it just wrote by globbing *.webp and treats a
+                        // non-empty glob result as "not found", so a temp dir shared between the
+                        // media file and the thumbnail makes it abort with
+                        //   ERROR: [Errno 2] No such file or directory: '...webp'
+                        // for a file that is actually present. See FileUtil.getPrivateTempDir.
+                        addOption(
+                            "--paths",
+                            "temp:" + context.getPrivateTempDir(videoInfo.id).absolutePath,
+                        )
                     }
 
                     if (splitByChapter) {
@@ -1003,7 +1037,7 @@ object DownloadUtil {
 
         val request =
             with(preferences) {
-                YoutubeDLRequest(urlList).apply {
+                YoutubeDLRequest(urlList).useBundledFfmpeg().apply {
                     commandDirectory.takeIf { it.isNotEmpty() }?.let { addOption("-P", it) }
                     addOption("--newline")
                     if (aria2c) {
@@ -1049,7 +1083,7 @@ object DownloadUtil {
                 context.makeToast(R.string.start_execute)
             }
             val request =
-                YoutubeDLRequest(urlList).apply {
+                YoutubeDLRequest(urlList).useBundledFfmpeg().apply {
                     commandDirectory.takeIf { it.isNotEmpty() }?.let { addOption("-P", it) }
                     addOption("--newline")
                     if (aria2c) {

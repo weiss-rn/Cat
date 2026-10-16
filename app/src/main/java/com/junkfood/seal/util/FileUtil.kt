@@ -241,6 +241,14 @@ object FileUtil {
             if (idDir.exists() && idDir.deleteRecursively()) {
                 count++
             }
+            // Downloads stage into the private per-video dir (see getPrivateTempDir). Without
+            // this the staged media and thumbnails survive in app storage forever, since the
+            // only other sweep is the manual "clear temp files" action.
+            context.getPrivateTempRoot().resolve(safeId).let { privateDir ->
+                if (privateDir.exists() && privateDir.deleteRecursively()) {
+                    count++
+                }
+            }
             return count
         }
         return deleteTempFilesByBaseName(baseName)
@@ -286,6 +294,31 @@ object FileUtil {
     fun Context.getArchiveFile(): File = filesDir.createEmptyFile("archive.txt").getOrThrow()
 
     fun Context.getInternalTempDir() = File(filesDir, "tmp")
+
+    /**
+     * Per-video private temp directory for yt-dlp.
+     *
+     * Every call site MUST pass [child] (the video id). yt-dlp locates a thumbnail it has just
+     * written by globbing `*.webp`, and reads a non-empty glob result as "no such file" - the
+     * standard `glob(...) or []` idiom. Sharing one directory across a video's own outputs
+     * therefore makes it fail on files that are plainly present:
+     *
+     *     ERROR: [Errno 2] No such file or directory: '.../tmp/Ou3t7lYqr2M/...[id].webp'
+     *
+     * reproduced while the 2.6 MB `.webm` sat in the same directory. Each video getting its own
+     * subdirectory guarantees the glob matches exactly one entry.
+     *
+     * Kept inside app-private storage rather than the shared external temp dir so that other
+     * files already staged there cannot be picked up, and so no scoped-storage permission is
+     * needed on Android 11+.
+     */
+    fun Context.getPrivateTempDir(child: String): File {
+        require(child.isNotBlank()) { "private temp dir requires a video id" }
+        return File(getInternalTempDir(), child).apply { mkdirs() }
+    }
+
+    /** Root of all per-video private temp directories, for cleanup. */
+    fun Context.getPrivateTempRoot() = getInternalTempDir()
 
     internal fun getExternalDownloadDirectory() =
         File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Cat")
