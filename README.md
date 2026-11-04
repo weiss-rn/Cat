@@ -21,6 +21,8 @@ Android video/audio downloader, forked from Seal.
 
 Some patches are taken from https://github.com/MaheshTechnicals/Sealplus, plus my own patches.
 
+Update: As per 04/11/2026 i'm tanking a single C++ App at the moment. This app is working but need stability check before publishing 2nd Pre-Release. For now **temporarily** i do not accept any PR or either Submission. Those who seek the library needed like mainly ffmpeg i suggest you to seek from mavencentral.
+ 
 ## To-do
 
 - [x] Implement Shizuku for more flexible file storing other than Internal (e.g External SSD or OTG USB)
